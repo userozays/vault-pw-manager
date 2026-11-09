@@ -1,0 +1,25 @@
+{
+  "name": "vault-pw-manager",
+  "version": "2.0.0",
+  "private": true,
+  "description": "Vault PW Manager — yerel, şifreli parola yöneticisi",
+  "type": "module",
+  "scripts": {
+    "test": "node esbuild.config.mjs core && node --test test/*.test.mjs",
+    "dev": "tauri dev",
+    "dist": "tauri build",
+    "build:ui": "node esbuild.config.mjs desktop",
+    "preview": "node esbuild.config.mjs preview",
+    "tauri": "tauri"
+  },
+  "devDependencies": {
+    "@tauri-apps/cli": "^2.12.4",
+    "esbuild": "^0.25.0",
+    "motion": "^12.0.0",
+    "typescript": "^5.6.0"
+  },
+  "author": "Özay",
+  "dependencies": {
+    "@tauri-apps/api": "^2.12.4"
+  }
+}

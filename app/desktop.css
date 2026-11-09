@@ -1,0 +1,8 @@
+/* Masaüstü penceresi: içerik pencerenin tamamını kaplar; macOS'ta trafik ışıkları üst şeridin üstünde durur. */
+html, body { margin: 0; height: 100%; overflow: hidden; background: #111113; }
+body.theme-light { background: #ffffff; }
+#host { height: 100%; }
+#host > .pw-root { height: 100%; }
+/* Windows/Linux'ta pencerenin kendi başlık çubuğu var: üst şerit daralır. */
+.pw-windows .pw-root, .pw-linux .pw-root { --bar: 48px; }
+.pw-windows .pw-side .pw-bar, .pw-linux .pw-side .pw-bar { height: 12px; }
