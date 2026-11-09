@@ -47,3 +47,6 @@ npm run dist   # Mac: src-tauri/target/release/bundle/{macos/*.app,dmg/*.dmg}
 ```
 - Windows kurulum dosyası (`.exe`, NSIS) Windows'ta `npm run dist` ile derlenir.
 - Mac: `signingIdentity: "-"` → ad-hoc imza. İnternetten indirilen kopyada ilk açılışta sağ tık → Aç gerekir.
+
+## Lisans
+[MIT](LICENSE)

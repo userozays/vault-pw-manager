@@ -1,6 +1,7 @@
 [package]
 name = "vault-pw-manager"
 version = "2.1.0"
+license = "MIT"
 description = "Vault PW Manager — local, encrypted password manager"
 authors = ["Özay"]
 edition = "2021"

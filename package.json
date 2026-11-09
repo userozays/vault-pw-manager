@@ -2,6 +2,7 @@
   "name": "vault-pw-manager",
   "version": "2.1.0",
   "private": true,
+  "license": "MIT",
   "description": "Vault PW Manager — yerel, şifreli parola yöneticisi",
   "type": "module",
   "scripts": {
