@@ -1,5 +1,8 @@
 import { createMeta, open, seal, unlockMeta, type Sealed, type VaultMeta } from "./crypto";
 
+export const BACKUP_EXT = "vpmbackup";
+const BACKUP_FORMAT = "vault-pw-manager-backup";
+
 // Her kayıt ayrı bir dosyada durur: iki makine farklı kayıtları değiştirirse git çakışmaz.
 // Dosya adı yalnız rastgele kimliği taşır; ad, site, kullanıcı adı dahil her şey şifreli.
 
@@ -39,6 +42,34 @@ interface EntryFile {
   v: 1;
   id: string;
   data: Sealed;
+}
+
+/**
+ * Şifreli yedek: kasanın tamamı tek dosyada. Kayıtlar diskteki gibi şifreli durur;
+ * dosya yalnız yedek alındığı andaki ana parolayla açılır.
+ */
+export interface Backup {
+  format: typeof BACKUP_FORMAT;
+  v: 1;
+  created: string;
+  count: number;
+  meta: VaultMeta;
+  entries: EntryFile[];
+}
+
+/** Metin bir yedek dosyası değilse null; bozuk bir yedekse hata. */
+export function parseBackup(text: string): Backup | null {
+  let data: Partial<Backup>;
+  try {
+    data = JSON.parse(text) as Partial<Backup>;
+  } catch {
+    return null;
+  }
+  if (!data || data.format !== BACKUP_FORMAT) return null;
+  if (data.v !== 1 || !data.meta?.salt || !data.meta.check || !Array.isArray(data.entries)) {
+    throw new Error("Yedek dosyası bozuk ya da bu sürümle uyumsuz.");
+  }
+  return data as Backup;
 }
 
 /** Varsayılan kasa klasörü (masaüstünde Rust kabuğu gerçek klasöre çevirir). */
@@ -189,6 +220,48 @@ export class Vault {
       }
     }
     return { changed, unreadable };
+  }
+
+  /** Açık kasanın şifreli yedeği (JSON metni). */
+  async backup(): Promise<string> {
+    const key = this.requireKey();
+    const meta = JSON.parse(await this.fs.read(this.meta)) as VaultMeta;
+    const entries = await Promise.all(
+      this.all().map(async (e): Promise<EntryFile> => ({ v: 1, id: e.id, data: await seal(key, e, e.id) })),
+    );
+    const backup: Backup = { format: BACKUP_FORMAT, v: 1, created: new Date().toISOString(), count: entries.length, meta, entries };
+    return JSON.stringify(backup);
+  }
+
+  /**
+   * Yedeği çözer. Parola verilmezse açık kasanın anahtarı denenir (aynı kasanın yedeği).
+   * Parola yanlışsa null. Çözülemeyen kayıtlar atlanır ve sayılır.
+   */
+  async openBackup(b: Backup, password?: string): Promise<{ entries: Entry[]; unreadable: number } | null> {
+    let key: CryptoKey | null;
+    if (password === undefined) {
+      key = this.requireKey();
+      try {
+        await open<string>(key, b.meta.check, "meta");
+      } catch {
+        return null;
+      }
+    } else key = await unlockMeta(b.meta, password);
+    if (!key) return null;
+    const entries: Entry[] = [];
+    let unreadable = 0;
+    await Promise.all(
+      b.entries.map(async (f) => {
+        try {
+          const e = await open<Entry>(key, f.data, f.id);
+          if (e.id !== f.id) throw new Error("kimlik uyuşmuyor");
+          entries.push(e);
+        } catch {
+          unreadable++;
+        }
+      }),
+    );
+    return { entries, unreadable };
   }
 
   private async listWithTimes(): Promise<{ path: string; mtime: number }[]> {

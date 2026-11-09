@@ -1,6 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { Vault, blankEntry, parseBitwarden, generatePassword, strength, DIR, toCsv, toBitwardenJson, parseCsvExport } from "../dist/core.mjs";
+import { Vault, blankEntry, parseBitwarden, generatePassword, strength, DIR, toCsv, toBitwardenJson, parseCsvExport, parseBackup } from "../dist/core.mjs";
 
 class MemFs {
   constructor() { this.files = new Map(); this.dirs = new Set(); this.t = 0; }
@@ -157,3 +157,49 @@ test("toplu okuma (scan + readMany) varsa tek çağrıyla açılır", async () =
   assert.deepEqual(calls, { scan: 1, readMany: 1, read: 1, stat: 0 }); // read: yalnız meta.json
 });
 
+
+test("şifreli yedek: düz metin yok, aynı kasa parolasız açılır", async () => {
+  const fs = new MemFs(); const v = new Vault(fs);
+  await v.create("yedek-ana-parola");
+  const a = blankEntry(); a.name = "Gizli Banka"; a.password = "Yedek-Sir-42!"; await v.save(a);
+  const b = blankEntry("note"); b.name = "Not"; b.notes = "çok özel not"; await v.save(b);
+  const text = await v.backup();
+  for (const s of ["Gizli Banka", "Yedek-Sir-42!", "çok özel not", "yedek-ana-parola"]) assert.ok(!text.includes(s), "sızıntı: " + s);
+  const bk = parseBackup(text);
+  assert.equal(bk.count, 2);
+  const r = await v.openBackup(bk);
+  assert.equal(r.entries.length, 2);
+  assert.equal(r.unreadable, 0);
+  assert.equal(r.entries.find(e => e.id === a.id).password, "Yedek-Sir-42!");
+});
+
+test("şifreli yedek: başka parolalı kasaya parolayla geri yüklenir", async () => {
+  const src = new Vault(new MemFs());
+  await src.create("eski-parola");
+  const e = blankEntry(); e.name = "Mail"; e.password = "p1"; await src.save(e);
+  const bk = parseBackup(await src.backup());
+  const dst = new Vault(new MemFs());
+  await dst.create("yeni-parola");
+  assert.equal(await dst.openBackup(bk), null, "farklı kasanın anahtarı açmamalı");
+  assert.equal(await dst.openBackup(bk, "yanlış"), null);
+  const r = await dst.openBackup(bk, "eski-parola");
+  assert.equal(r.entries[0].password, "p1");
+  for (const x of r.entries) await dst.save(x);
+  dst.lock();
+  assert.equal(await dst.unlock("yeni-parola"), true);
+  assert.equal(dst.all()[0].name, "Mail");
+});
+
+test("şifreli yedek: kurcalanan kayıt sayılır, yedek olmayan dosya null", async () => {
+  const v = new Vault(new MemFs());
+  await v.create("p");
+  const e = blankEntry(); e.name = "X"; await v.save(e);
+  const bk = JSON.parse(await v.backup());
+  bk.entries[0].id = crypto.randomUUID();
+  const r = await v.openBackup(parseBackup(JSON.stringify(bk)));
+  assert.equal(r.entries.length, 0);
+  assert.equal(r.unreadable, 1);
+  assert.equal(parseBackup('{"items":[]}'), null);
+  assert.equal(parseBackup("ad,parola\nx,y"), null);
+  assert.throws(() => parseBackup('{"format":"vault-pw-manager-backup","v":2}'));
+});

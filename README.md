@@ -14,12 +14,18 @@ Masaüstü uygulaması Tauri (Rust kabuk + sistem web görünümü) ile çalış
 `Belgeler/Vault PW Manager/` — yalnız o bilgisayarda. Sol alttaki **Klasörü göster** ile açılır.
 İlk açılışta eski Ōkami Kasa kayıtları (`Belgeler/Okami Kasa/Kasa`) varsa buraya **kopyalanır**; eskiler silinmez.
 
+## Şifreli yedek
+Kayıtlar yalnız bu bilgisayarda durduğu için ara ara yedek al: **Dışa aktar → Şifreli yedek** ya da **Ayarlar → Şifreli yedek al**.
+- Tek bir `.vpmbackup` dosyası üretir. Kayıtlar içinde şifreli durur; dosya yalnız yedeği aldığın andaki ana parolayla açılır. USB'ye ya da buluta koymak güvenlidir.
+- **Geri yükleme:** **İçe aktar** ile yedek dosyasını seç. Aynı kasanın yedeğiyse parola sorulmaz; farklı bir ana parolayla alınmışsa o parola istenir. Kasada zaten olan kayıtlar atlanır, mevcut kayıtlara dokunulmaz.
+- Ayarlar ekranı son yedeğin tarihini gösterir.
+
 ## İçe / dışa aktarma
-- **İçe:** Bitwarden (.json), Chrome, Edge, Brave, Safari, Firefox, 1Password, LastPass, KeePass (.csv). Zaten olan kayıtlar atlanır.
-- **Dışa:** Bitwarden JSON (her şey) veya CSV (yalnız girişler). Dosya, sistemin kaydet penceresiyle seçtiğin yere yazılır.
+- **İçe:** Şifreli yedek (.vpmbackup), Bitwarden (.json), Chrome, Edge, Brave, Safari, Firefox, 1Password, LastPass, KeePass (.csv). Zaten olan kayıtlar atlanır.
+- **Dışa:** Şifreli yedek, Bitwarden JSON (her şey, açık metin) veya CSV (yalnız girişler, açık metin). Dosya, sistemin kaydet penceresiyle seçtiğin yere yazılır.
 
 ## Ayarlar
-Sol alttaki **Ayarlar**: görünüm (Sistem / Açık / Koyu) ve otomatik kilit süresi (15 sn / 1 dk / 5 dk / 15 dk). Ayarlar bu bilgisayarda saklanır.
+Sol alttaki **Ayarlar**: görünüm (Sistem / Açık / Koyu) otomatik kilit süresi (15 sn / 1 dk / 5 dk / 15 dk) ve şifreli yedek. Ayarlar bu bilgisayarda saklanır.
 
 ## Kısayollar
 `⌘F` ara · `⌘N` yeni kayıt · `⌘S` kaydet · `⌘L` kilitle · `↑ ↓` listede gez · `Esc` vazgeç / aramayı temizle

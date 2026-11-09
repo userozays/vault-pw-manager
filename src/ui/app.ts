@@ -1,6 +1,6 @@
 import { generatePassword, strength, type GenOptions } from "../crypto";
 import { parseImport, toBitwardenJson, toCsv } from "../importers";
-import { Vault, blankEntry, sameEntry, type Entry, type EntryType } from "../store";
+import { BACKUP_EXT, Vault, blankEntry, parseBackup, sameEntry, type Backup, type Entry, type EntryType } from "../store";
 import { decode, move, reduced, shake, spring, stagger } from "./motion";
 
 export const APP_NAME = "Vault PW Manager";
@@ -110,6 +110,8 @@ export type ThemeMode = "system" | "light" | "dark";
 interface Settings {
   theme: ThemeMode;
   lockMs: number;
+  /** Son şifreli yedeğin zamanı (ISO). */
+  lastBackup: string | null;
 }
 const THEMES: readonly (readonly [ThemeMode, string])[] = [
   ["system", "Sistem"],
@@ -123,7 +125,7 @@ const LOCK_CHOICES: readonly (readonly [number, string])[] = [
   [900_000, "15 dk"],
 ];
 const SETTINGS_KEY = "vault-pw-manager.settings";
-const DEFAULT_SETTINGS: Settings = { theme: "system", lockMs: 15_000 };
+const DEFAULT_SETTINGS: Settings = { theme: "system", lockMs: 15_000, lastBackup: null };
 
 function loadSettings(): Settings {
   try {
@@ -131,6 +133,7 @@ function loadSettings(): Settings {
     return {
       theme: THEMES.some(([t]) => t === s.theme) ? s.theme! : DEFAULT_SETTINGS.theme,
       lockMs: LOCK_CHOICES.some(([ms]) => ms === s.lockMs) ? s.lockMs! : DEFAULT_SETTINGS.lockMs,
+      lastBackup: typeof s.lastBackup === "string" && !isNaN(Date.parse(s.lastBackup)) ? s.lastBackup : null,
     };
   } catch {
     return { ...DEFAULT_SETTINGS };
@@ -168,7 +171,7 @@ const browserHost: Required<Pick<Host, "copy" | "saveFile" | "pickFile" | "openU
   },
   pickFile() {
     return new Promise((resolve) => {
-      const input = h("input", { type: "file", accept: ".json,.csv,application/json,text/csv" }) as HTMLInputElement;
+      const input = h("input", { type: "file", accept: `.json,.csv,.${BACKUP_EXT},application/json,text/csv` }) as HTMLInputElement;
       input.addEventListener("change", async () => {
         const f = input.files?.[0];
         resolve(f ? { name: f.name, text: await f.text() } : null);
@@ -1042,6 +1045,13 @@ export class VaultApp {
       return void this.toast((err as Error).message, "warn");
     }
     if (!picked) return;
+    let backup: Backup | null;
+    try {
+      backup = parseBackup(picked.text);
+    } catch (err) {
+      return void this.toast((err as Error).message, "warn");
+    }
+    if (backup) return this.restoreBackup(backup, picked.name);
     let incoming: Entry[];
     let format: string;
     try {
@@ -1071,16 +1081,18 @@ export class VaultApp {
     const logins = all.filter((e) => e.type === "login");
     if (!all.length) return void this.toast("Dışa aktarılacak kayıt yok", "warn");
     const formats = [
+      { label: "Şifreli yedek", desc: `${all.length} kaydın hepsi, ana parolanla şifreli. USB'de ya da bulutta güvenle saklanır. Geri yüklemek için: İçe aktar.`, count: all.length, ext: BACKUP_EXT, type: "application/json", make: () => "" },
       { label: "Bitwarden JSON", desc: `${all.length} kaydın hepsi: notlar, kartlar, klasörler. Bitwarden, Proton Pass, KeePassXC ve bu uygulama geri alır.`, count: all.length, ext: "json", type: "application/json", make: () => toBitwardenJson(all) },
       { label: "CSV", desc: `${logins.length} giriş kaydı. Tarayıcılar ve çoğu parola yöneticisi alır; notlar ve kartlar girmez.`, count: logins.length, ext: "csv", type: "text/csv;charset=utf-8", make: () => toCsv(logins) },
     ].filter((f) => f.count);
     const pick = await this.modal<(typeof formats)[number]>((done) => [
       h("h2", {}, "Dışa aktar"),
-      h("p", { class: "pw-muted" }, "Dosyada parolalar açık metin olarak durur. İşin bitince sil."),
+      h("p", { class: "pw-muted" }, "Yedek için şifreli yedeği seç. Diğer iki biçimde parolalar açık metin olarak durur; başka bir uygulamaya taşıdıktan sonra dosyayı sil."),
       h("div", { class: "pw-options" }, ...formats.map((f) => h("button", { class: "pw-option", onclick: () => done(f) }, h("strong", {}, f.label), h("span", {}, f.desc)))),
       h("div", { class: "pw-modal-actions" }, h("button", { class: "pw-btn pw-btn-ghost", onclick: () => done(null) }, "Vazgeç")),
     ]);
     if (!pick) return;
+    if (pick.ext === BACKUP_EXT) return void (await this.backupVault());
     const name = `vault-pw-manager-${new Date().toISOString().slice(0, 10)}.${pick.ext}`;
     try {
       if (!(await this.io.saveFile(name, pick.make(), pick.type))) return;
@@ -1088,6 +1100,78 @@ export class VaultApp {
       return void this.toast(`Kaydedilemedi: ${(err as Error).message}`, "warn");
     }
     this.toast(`${pick.count} kayıt dışa aktarıldı. İşin bitince dosyayı sil.`);
+  }
+
+  // ---------- şifreli yedek ----------
+
+  /** Yedeği kaydeder. Başarılıysa true. */
+  private async backupVault(): Promise<boolean> {
+    const count = this.vault.all().length;
+    if (!count) return void this.toast("Yedeklenecek kayıt yok", "warn"), false;
+    const name = `vault-pw-manager-yedek-${new Date().toISOString().slice(0, 10)}.${BACKUP_EXT}`;
+    try {
+      if (!(await this.io.saveFile(name, await this.vault.backup(), "application/json"))) return false;
+    } catch (err) {
+      return void this.toast(`Yedek kaydedilemedi: ${(err as Error).message}`, "warn"), false;
+    }
+    this.settings.lastBackup = new Date().toISOString();
+    saveSettings(this.settings);
+    this.toast(`${count} kayıt şifreli olarak yedeklendi`);
+    return true;
+  }
+
+  private async restoreBackup(backup: Backup, fileName: string): Promise<void> {
+    // Aynı kasanın yedeğiyse parola sorulmaz; başka bir parolayla alınmışsa o parola istenir.
+    const opened = (await this.vault.openBackup(backup)) ?? (await this.askBackupPassword(backup));
+    if (!opened) return;
+    const existing = this.vault.all();
+    const fresh = opened.entries.filter((n) => !existing.some((e) => e.id === n.id || sameEntry(e, n)));
+    const lost = opened.unreadable ? ` ${opened.unreadable} kayıt çözülemedi.` : "";
+    if (!fresh.length) return void this.toast(`Yedekteki kayıtların hepsi kasada zaten var.${lost}`, lost ? "warn" : "info");
+    const skipped = opened.entries.length - fresh.length;
+    const ok = await this.ask(
+      `${fresh.length} kayıt geri yüklensin mi?`,
+      `${fileName} · ${new Date(backup.created).toLocaleString("tr-TR", { dateStyle: "medium", timeStyle: "short" })} tarihli yedek.${skipped ? ` ${skipped} kayıt zaten var, atlanacak.` : ""}${lost} Kasadaki mevcut kayıtlara dokunulmaz.`,
+      "Geri yükle",
+    );
+    if (!ok) return;
+    for (const e of fresh) await this.vault.save(e);
+    this.renderSidebar(false);
+    this.renderList(true);
+    this.toast(`${fresh.length} kayıt yedekten geri yüklendi`);
+  }
+
+  private askBackupPassword(backup: Backup): Promise<{ entries: Entry[]; unreadable: number } | null> {
+    return this.modal((done) => {
+      const input = h("input", { class: "pw-input", type: "password", placeholder: "Yedeğin ana parolası", autocomplete: "off", spellcheck: "false", "aria-label": "Yedeğin ana parolası" }) as HTMLInputElement;
+      const note = h("p", { class: "pw-muted pw-modal-note" }, "Bu yedek farklı bir ana parolayla alınmış. Yedeği aldığın andaki parolayı gir.");
+      const go = h("button", { class: "pw-btn pw-btn-primary", type: "submit" }, "Aç") as HTMLButtonElement;
+      const form = h(
+        "form",
+        { class: "pw-modal-form" },
+        input,
+        h("div", { class: "pw-modal-actions" }, h("button", { class: "pw-btn pw-btn-ghost", type: "button", onclick: () => done(null) }, "Vazgeç"), go),
+      );
+      form.addEventListener("submit", async (ev) => {
+        ev.preventDefault();
+        if (!input.value || go.disabled) return;
+        go.disabled = true;
+        go.textContent = "Açılıyor…";
+        const r = await this.vault.openBackup(backup, input.value);
+        if (r) {
+          input.value = "";
+          return done(r);
+        }
+        go.disabled = false;
+        go.textContent = "Aç";
+        note.textContent = "Parola yanlış. Tekrar dene.";
+        note.classList.add("is-warn");
+        input.select();
+        shake(form);
+      });
+      setTimeout(() => input.focus(), 40);
+      return [h("h2", {}, "Yedeğin parolası"), note, form];
+    });
   }
 
   // ---------- pencereler ----------
@@ -1161,9 +1245,31 @@ export class VaultApp {
             this.lastActive = Date.now();
           }),
         ),
+        this.backupRow(row),
       ),
       h("div", { class: "pw-modal-actions" }, h("button", { class: "pw-btn pw-btn-primary", onclick: () => done(true) }, "Tamam")),
     ]);
+  }
+
+  private backupRow(row: (title: string, sub: string, control: HTMLElement) => HTMLElement): HTMLElement {
+    const when = () => {
+      const t = this.settings.lastBackup;
+      if (!t) return "Henüz yedek alınmadı. Kayıtların yalnız bu bilgisayarda.";
+      const days = Math.floor((Date.now() - Date.parse(t)) / 86_400_000);
+      const date = new Date(t).toLocaleDateString("tr-TR", { day: "numeric", month: "long", year: "numeric" });
+      return `Son yedek: ${date}${days > 0 ? ` (${days} gün önce)` : " (bugün)"}.`;
+    };
+    const btn = h("button", { class: "pw-btn pw-set-btn", type: "button" }, icon("download"), "Şifreli yedek al") as HTMLButtonElement;
+    const r = row("Yedek", when(), btn);
+    btn.addEventListener("click", async () => {
+      btn.disabled = true;
+      if (await this.backupVault()) {
+        const sub = r.querySelector(".pw-set-text span");
+        if (sub) sub.textContent = when();
+      }
+      btn.disabled = false;
+    });
+    return r;
   }
 
   /** Seçili öğenin arkasındaki hap, seçim değişince yeni seçeneğe kayar. */

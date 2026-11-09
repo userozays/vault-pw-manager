@@ -254,7 +254,7 @@ async fn pick_import(app: AppHandle) -> R<Option<Picked>> {
     let picked = app
         .dialog()
         .file()
-        .add_filter("Parola dışa aktarımı", &["json", "csv"])
+        .add_filter("Parola dışa aktarımı ya da yedek", &["json", "csv", "vpmbackup"])
         .blocking_pick_file();
     let Some(fp) = picked else { return Ok(None) };
     let path = fp.into_path().map_err(err)?;

@@ -407,6 +407,11 @@ body.theme-light .pw-root:not(.is-dark) .pw-avatar,
 .pw-set-text strong { font-size: 13.5px; font-weight: 600; }
 .pw-set-text span { font-size: 12.5px; color: var(--muted); line-height: 1.45; }
 .pw-set .pw-seg { display: flex; width: 100%; margin: 0; }
+.pw-set-btn { display: inline-flex; align-items: center; justify-content: center; gap: 7px; width: 100%; border-color: var(--line-2); }
+.pw-modal-form { margin-top: 16px; }
+.pw-modal-form .pw-input { padding: 9px 12px; border: 1px solid var(--line-2); border-radius: 10px; font-family: var(--mono); font-size: 13.5px; transition: border-color 0.15s; }
+.pw-modal-form .pw-input:focus { border-color: var(--line-3); }
+.pw-modal-note.is-warn { color: var(--danger); }
 .pw-set .pw-seg-btn { flex: 1; padding: 0 8px; }
 
 /* Tema değişimi: eski ve yeni görünüm yumuşakça birbirine geçer. */
