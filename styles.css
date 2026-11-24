@@ -371,6 +371,9 @@ body.theme-light .pw-root:not(.is-dark) .pw-avatar,
 .pw-lock-field:focus-within { border-color: var(--line-3); box-shadow: 0 0 0 4px var(--ring); }
 .pw-lock-input { flex: 1; min-width: 0; height: 100%; padding: 0; border: 0; outline: none; background: transparent; color: var(--text); font-size: 14px; }
 .pw-lock-input::placeholder { color: var(--faint); }
+/* Windows (WebView2/Edge) parola alanlarına kendi göster/temizle düğmesini ekler; bizimki yeterli. */
+.pw-root input::-ms-reveal,
+.pw-root input::-ms-clear { display: none; }
 .pw-lock-eye { display: grid; place-items: center; width: 32px; height: 32px; margin-right: 2px; padding: 0; border: 0; border-radius: 8px; background: none; color: var(--faint); cursor: pointer; transition: color 0.15s, background-color 0.15s; }
 .pw-lock-eye:hover { color: var(--text); background: var(--hover-2); }
 .pw-lock-eye[aria-pressed="true"] { color: var(--muted); }

@@ -9,6 +9,7 @@
     "test": "node esbuild.config.mjs core && node --test test/*.test.mjs",
     "dev": "tauri dev",
     "dist": "tauri build",
+    "dist:win": "PATH=/opt/homebrew/opt/llvm/bin:$PATH LANG=en_US.UTF-8 LC_ALL=en_US.UTF-8 tauri build --runner cargo-xwin --target x86_64-pc-windows-msvc",
     "build:ui": "node esbuild.config.mjs desktop",
     "preview": "node esbuild.config.mjs preview",
     "tauri": "tauri"

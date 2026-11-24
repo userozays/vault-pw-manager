@@ -325,6 +325,7 @@ fn main() {
             fs::create_dir_all(&dir)?;
             app.manage(Data { dir });
 
+            #[cfg_attr(not(target_os = "macos"), allow(unused_mut))]
             let mut win = WebviewWindowBuilder::new(app, "main", WebviewUrl::default())
                 .title("Vault PW Manager")
                 .inner_size(1080.0, 700.0)

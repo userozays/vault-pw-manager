@@ -45,7 +45,14 @@ Geliştirme modunda gerçek kasaya dokunmamak için: `VPM_DATA=/tmp/deneme-kasa 
 ```sh
 npm run dist   # Mac: src-tauri/target/release/bundle/{macos/*.app,dmg/*.dmg}
 ```
-- Windows kurulum dosyası (`.exe`, NSIS) Windows'ta `npm run dist` ile derlenir.
+- Windows kurulum dosyası (`.exe`, NSIS, x64) Windows'ta `npm run dist` ile ya da **Mac'te** şöyle derlenir:
+  ```sh
+  brew install nsis llvm lld
+  rustup target add x86_64-pc-windows-msvc
+  cargo install --locked cargo-xwin
+  npm run dist:win   # src-tauri/target/x86_64-pc-windows-msvc/release/bundle/nsis/*-setup.exe
+  ```
+  `dist:win` UTF-8 yerel ayarıyla çalışır; ayarsız kabukta Homebrew `makensis` çöker. Kurulum yönetici izni istemez (kullanıcıya kurulur); WebView2 Windows 11'de hazır gelir.
 - Mac: `signingIdentity: "-"` → ad-hoc imza. İnternetten indirilen kopyada ilk açılışta sağ tık → Aç gerekir.
 
 ## Lisans
