@@ -841,7 +841,8 @@ export class VaultApp {
   }
 
   private detailBar(...right: Child[]): HTMLElement {
-    const back = h("button", { class: "pw-icon-btn pw-back", title: "Listeye dön", "aria-label": "Listeye dön", onclick: () => void this.backToList() }, icon("back"));
+    // type="button": düzenleme formunda Enter'a basınca tarayıcı ilk "submit" düğmesine basar; o düğme Kaydet olmalı, bu değil.
+    const back = h("button", { class: "pw-icon-btn pw-back", type: "button", title: "Listeye dön", "aria-label": "Listeye dön", onclick: () => void this.backToList() }, icon("back"));
     return h("div", { class: "pw-bar pw-detail-bar", "data-tauri-drag-region": true }, back, h("div", { class: "pw-grow", "data-tauri-drag-region": true }), ...right);
   }
 
