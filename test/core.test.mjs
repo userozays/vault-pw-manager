@@ -84,7 +84,7 @@ test("parola üretici ve güç", () => {
   assert.equal(strength("123").score, 0);
 });
 
-import { parseCsv, parseImport } from "../dist/core.mjs";
+import { parseCsv, parseImport, planImport } from "../dist/core.mjs";
 
 test("CSV ayrıştırıcı: tırnak, kaçış, satır içi satır sonu, BOM", () => {
   const rows = parseCsv('﻿a,b,c\r\n"x, y","he said ""hi""","çok\nsatır"\n');
@@ -290,6 +290,23 @@ test("klasör: şifreli yedek boş klasörleri taşır; eski yedek klasörsüz d
   assert.deepEqual(dst.folders(), ["Boş Klasör", "Dolu"]);
   const old = JSON.parse(text); delete old.folders;
   assert.deepEqual((await src.openBackup(parseBackup(JSON.stringify(old)))).folders, []);
+});
+
+test("içe aktarma planı: yeni eklenir, klasörsüz olan yerleşir, başka klasördekine dokunulmaz", () => {
+  const mk = (name, folder = "", username = "u") => Object.assign(blankEntry("login"), { name, folder, username, url: `https://${name.toLowerCase()}.com` });
+  const existing = [mk("spotify"), mk("instagram", "Kendi Seçimim"), mk("faceit", "Oyun")];
+  const incoming = [mk("spotify", "Eğlence"), mk("instagram", "Sosyal medya"), mk("faceit", "oyun"), mk("amazon", "alışveriş"), mk("Spotify", "Eğlence")];
+  const resolve = (n) => (n.toLocaleLowerCase("tr") === "alışveriş" ? "Alışveriş" : n.trim());
+  const plan = planImport(existing, incoming, resolve);
+  assert.deepEqual(plan.fresh.map(e => [e.name, e.folder]), [["amazon", "Alışveriş"]]);
+  assert.deepEqual(plan.refile.map(r => [r.entry.name, r.folder]), [["spotify", "Eğlence"]], "aynı kayıt iki kez yerleşmez");
+  assert.equal(plan.unchanged, 3);
+});
+
+test("içe aktarma planı: klasörsüz dosya kasadaki klasörleri bozmaz", () => {
+  const a = Object.assign(blankEntry("login"), { name: "A", folder: "" });
+  const plan = planImport([a], [Object.assign(blankEntry("login"), { name: "A" })]);
+  assert.deepEqual([plan.fresh.length, plan.refile.length, plan.unchanged], [0, 0, 1]);
 });
 
 test("Bitwarden JSON boş klasörleri de yazar", () => {

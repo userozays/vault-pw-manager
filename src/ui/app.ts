@@ -1,6 +1,6 @@
 import { generatePassword, strength, type GenOptions } from "../crypto";
 import { parseImport, toBitwardenJson, toCsv } from "../importers";
-import { BACKUP_EXT, Vault, blankEntry, checkFolderName, parseBackup, sameEntry, sameFolder, type Backup, type Entry, type EntryType } from "../store";
+import { BACKUP_EXT, Vault, blankEntry, checkFolderName, parseBackup, planImport, sameEntry, sameFolder, type Backup, type Entry, type EntryType } from "../store";
 import { decode, move, reduced, shake, spring, stagger } from "./motion";
 
 export const APP_NAME = "Vault PW Manager";
@@ -1216,20 +1216,29 @@ export class VaultApp {
       return void this.toast((err as Error).message, "warn");
     }
     if (!incoming.length) return void this.toast("Dosyada içe aktarılacak kayıt bulunamadı", "warn");
-    const existing = this.vault.all();
-    const fresh = incoming.filter((n) => !existing.some((e) => sameEntry(e, n)));
-    if (!fresh.length) return void this.toast("Dosyadaki kayıtların hepsi kasada zaten var");
-    const skipped = incoming.length - fresh.length;
-    const ok = await this.ask(
-      `${fresh.length} kayıt içe aktarılsın mı?`,
-      `${format} dosyası: ${picked.name}${skipped ? `. ${skipped} kayıt zaten var, atlanacak.` : "."}`,
-      "İçe aktar",
-    );
+    const { fresh, refile, unchanged } = planImport(this.vault.all(), incoming, (name) => this.vault.findFolder(name) ?? name.trim());
+    if (!fresh.length && !refile.length) return void this.toast("Dosyadaki kayıtların hepsi kasada zaten var");
+    // Kasada olup klasörsüz duran kayıtlar dosyadaki klasöre alınır; başka bir klasördekilere dokunulmaz.
+    const title =
+      fresh.length && refile.length
+        ? `${fresh.length} kayıt eklensin, ${refile.length} kayıt klasörüne yerleşsin mi?`
+        : fresh.length
+          ? `${fresh.length} kayıt içe aktarılsın mı?`
+          : `${refile.length} kaydın klasörü güncellensin mi?`;
+    const notes = [
+      `${format} dosyası: ${picked.name}.`,
+      refile.length ? `${refile.length} kayıt kasada zaten var ama klasörsüz; dosyadaki klasöre taşınacak, başka bir şeyi değişmeyecek.` : "",
+      unchanged ? `${unchanged} kayıt zaten var, atlanacak.` : "",
+    ].filter(Boolean);
+    const ok = await this.ask(title, notes.join(" "), fresh.length ? "İçe aktar" : "Klasörleri güncelle");
     if (!ok) return;
     for (const e of fresh) await this.vault.save(e);
+    for (const { entry, folder } of refile) await this.vault.save({ ...entry, folder });
     this.renderSidebar(false);
     this.renderList(true);
-    this.toast(`${fresh.length} kayıt şifrelenip eklendi. Dışa aktarım dosyasını artık silebilirsin.`);
+    if (this.view.mode === "show") this.renderDetail(false);
+    const done = [fresh.length ? `${fresh.length} kayıt şifrelenip eklendi` : "", refile.length ? `${refile.length} kayıt klasörüne taşındı` : ""].filter(Boolean).join(", ");
+    this.toast(`${done}. Dışa aktarım dosyasını artık silebilirsin.`);
   }
 
   private async exportVault(): Promise<void> {

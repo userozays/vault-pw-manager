@@ -466,3 +466,35 @@ export function sameEntry(a: Entry, b: Entry): boolean {
     a.url === b.url
   );
 }
+
+export interface ImportPlan {
+  /** Kasada olmayan, eklenecek kayıtlar. */
+  fresh: Entry[];
+  /** Kasada olan ve klasörsüz duran kayıtlar: dosyadaki klasöre alınacak. */
+  refile: { entry: Entry; folder: string }[];
+  /** Kasada olan, değişmeyecek kayıtlar (klasörü aynı ya da kullanıcı başka klasöre koymuş). */
+  unchanged: number;
+}
+
+/**
+ * İçe aktarılan kayıtları kasadakilerle karşılaştırır. Kasada olan kayıt tekrar eklenmez;
+ * klasörsüzse dosyadaki klasöre alınır. Kullanıcının başka bir klasöre koyduğu kayda dokunulmaz.
+ * `resolveFolder`: "oyun" gibi bir adı var olan "Oyun" klasörüne eşler.
+ */
+export function planImport(existing: Entry[], incoming: Entry[], resolveFolder: (name: string) => string = (n) => n.trim()): ImportPlan {
+  const plan: ImportPlan = { fresh: [], refile: [], unchanged: 0 };
+  const queued = new Set<string>();
+  for (const n of incoming) {
+    const folder = n.folder.trim() ? resolveFolder(n.folder) : "";
+    const match = existing.find((e) => sameEntry(e, n));
+    if (!match) {
+      plan.fresh.push({ ...n, folder });
+    } else if (folder && !match.folder.trim() && !queued.has(match.id)) {
+      plan.refile.push({ entry: match, folder });
+      queued.add(match.id);
+    } else {
+      plan.unchanged++;
+    }
+  }
+  return plan;
+}
