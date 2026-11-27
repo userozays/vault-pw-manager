@@ -65,6 +65,7 @@ interface FoldersFile {
   data: Sealed;
 }
 const FOLDERS_BIND = "folders";
+const DRAFT_BIND = "draft";
 
 const folderKey = (name: string) => name.trim().toLocaleLowerCase("tr");
 /** İki klasör adı aynı klasör mü (büyük/küçük harf ve baştaki/sondaki boşluk önemsiz). */
@@ -208,6 +209,22 @@ export class Vault {
     if (await this.fs.exists(path)) await this.fs.remove(path);
     this.entries.delete(id);
     this.mtimes.delete(path);
+  }
+
+  // ---- kilitlenirken yarım kalan düzenleme ----
+
+  /** Kaydedilmemiş taslağı kasa anahtarıyla şifreler (kilitlenmeden hemen önce). Diske yazılmaz. */
+  sealDraft(draft: Entry): Promise<Sealed> {
+    return seal(this.requireKey(), draft, DRAFT_BIND);
+  }
+
+  /** Kilit açıldıktan sonra taslağı çözer; çözülemezse null. */
+  async openDraft(sealed: Sealed): Promise<Entry | null> {
+    try {
+      return await open<Entry>(this.requireKey(), sealed, DRAFT_BIND);
+    } catch {
+      return null;
+    }
   }
 
   // ---- klasörler ----

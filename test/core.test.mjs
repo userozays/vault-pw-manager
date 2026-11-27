@@ -309,6 +309,22 @@ test("içe aktarma planı: klasörsüz dosya kasadaki klasörleri bozmaz", () =>
   assert.deepEqual([plan.fresh.length, plan.refile.length, plan.unchanged], [0, 0, 1]);
 });
 
+test("taslak: kilitlenmeden önce şifrelenir, kilit açılınca geri çözülür", async () => {
+  const fs = new MemFs(); const v = new Vault(fs);
+  await v.create("pw");
+  const d = blankEntry(); d.name = "GitHub"; d.password = "Yarım-Kalan-Parola-7";
+  const before = fs.files.size;
+  const sealed = await v.sealDraft(d);
+  assert.equal(fs.files.size, before, "taslak diske yazılmaz");
+  assert.ok(!JSON.stringify(sealed).includes("Yarım-Kalan-Parola-7"), "taslak düz metin");
+  v.lock();
+  assert.equal(await v.openDraft(sealed), null, "kilitliyken çözülmez");
+  await v.unlock("pw");
+  assert.equal((await v.openDraft(sealed)).password, "Yarım-Kalan-Parola-7");
+  const other = new Vault(new MemFs()); await other.create("pw2");
+  assert.equal(await other.openDraft(sealed), null, "başka kasanın anahtarı açamaz");
+});
+
 test("Bitwarden JSON boş klasörleri de yazar", () => {
   const a = blankEntry("login"); a.name = "X"; a.folder = "Dolu";
   const json = JSON.parse(toBitwardenJson([a], ["Boş", "Dolu"]));

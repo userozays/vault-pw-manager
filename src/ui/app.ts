@@ -1,4 +1,4 @@
-import { generatePassword, strength, type GenOptions } from "../crypto";
+import { generatePassword, strength, type GenOptions, type Sealed } from "../crypto";
 import { parseImport, toBitwardenJson, toCsv } from "../importers";
 import { BACKUP_EXT, Vault, blankEntry, checkFolderName, parseBackup, planImport, sameEntry, sameFolder, type Backup, type Entry, type EntryType } from "../store";
 import { decode, move, reduced, shake, spring, stagger } from "./motion";
@@ -203,6 +203,8 @@ export class VaultApp {
   private ticker = 0;
   private locking = false;
   private dirty = false;
+  /** Kilitlenirken kaydedilmemiş düzenleme (şifreli); kilit açılınca forma geri konur. */
+  private pendingDraft: { sealed: Sealed; isNew: boolean } | null = null;
   private warnedUnreadable = false;
   private cleanup: (() => void)[] = [];
   private els: {
@@ -265,6 +267,15 @@ export class VaultApp {
   async lock(): Promise<void> {
     if (this.locking || !this.vault.unlocked) return;
     this.locking = true;
+    // Düzenleme yarımdaysa (ör. siteye gidip şifre değiştirirken otomatik kilit) değişiklikler kaybolmasın:
+    // taslak kasa anahtarıyla şifrelenip yalnız bellekte tutulur, kilit açılınca forma geri konur.
+    if (this.view.mode === "edit" && this.dirty) {
+      try {
+        this.pendingDraft = { sealed: await this.vault.sealDraft(this.view.draft), isNew: this.view.isNew };
+      } catch {
+        this.pendingDraft = null;
+      }
+    }
     this.vault.lock();
     this.io.onLock?.();
     try {
@@ -411,9 +422,24 @@ export class VaultApp {
   private async revealApp(lockEl: HTMLElement, shackle: Element): Promise<void> {
     await move(shackle, { y: [0, -7] }, spring(0.4, 0.38));
     this.showApp(true, lockEl);
+    await this.restoreDraft();
     await move(lockEl, { opacity: [1, 0], scale: [1, 1.04], filter: ["blur(0px)", "blur(12px)"] }, { duration: 0.36, ease: [0.4, 0, 0.2, 1] });
     lockEl.remove();
     this.io.onUnlock?.();
+  }
+
+  /** Kilitlenirken yarım kalan düzenlemeyi geri getirir; kaydetmek kullanıcıya kalır. */
+  private async restoreDraft(): Promise<void> {
+    const pending = this.pendingDraft;
+    this.pendingDraft = null;
+    if (!pending) return;
+    const draft = await this.vault.openDraft(pending.sealed);
+    if (!draft) return;
+    this.view = { mode: "edit", draft, isNew: pending.isNew };
+    this.dirty = true;
+    this.markSelected(pending.isNew ? null : draft.id);
+    this.renderDetail(true);
+    this.toast("Kilitlenmeden önce kaydedilmemiş değişikliklerin geri geldi. Kaydet'e basmayı unutma.");
   }
 
   private coverWithLock(): Promise<void> {
