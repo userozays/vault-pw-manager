@@ -33,6 +33,12 @@ paint();
     pickFile: () => invoke("pick_import"),
     openUrl: (url) => void invoke("open_link", { url }),
     reveal: () => void invoke("reveal"),
+    location: {
+      get: () => invoke("vault_location"),
+      pick: () => invoke("pick_location"),
+      set: (mode) => invoke("set_location", { mode }),
+    },
+    reload: () => window.location.reload(),
     onReady: () => void getCurrentWindow().show(),
     onTheme: (mode) => {
       themeMode = mode;

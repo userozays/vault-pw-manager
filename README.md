@@ -11,7 +11,12 @@ Masaüstü uygulaması Tauri (Rust kabuk + sistem web görünümü) ile çalış
 - Kopyalanan gizli değer 30 sn sonra panodan silinir (pano hâlâ aynı değeri tutuyorsa).
 
 ## Veri konumu
-`Belgeler/Vault PW Manager/` — yalnız o bilgisayarda. Sol alttaki **Klasörü göster** ile açılır.
+Varsayılan: `Belgeler/Vault PW Manager/` — yalnız o bilgisayarda. Sol alttaki **Klasörü göster** ile açılır.
+- **Ayarlar → Kasa konumu → Değiştir…** ile başka bir klasör seçilir:
+  - Seçilen klasörde kasa varsa (içinde `meta.json`) Vault ona **geçer**; şu anki kasa yerinde kalır.
+  - Yoksa kasa oraya **taşınır**: dosyalar kopyalanır, birebir aynı olduğu denetlenir, sonra eskiler silinir.
+- Seçilen konum uygulama ayar klasöründeki `location.txt` dosyasında durur (Windows: `%APPDATA%\com.ozay.vault-pw-manager`).
+- Vault kasa bulamayıp "Kasanı oluştur" ekranını açarsa ekranda hangi klasöre baktığı yazar; **Var olan kasayı aç…** ile başka bir klasördeki kasa seçilir.
 İlk açılışta eski Ōkami Kasa kayıtları (`Belgeler/Okami Kasa/Kasa`) varsa buraya **kopyalanır**; eskiler silinmez.
 
 ## Şifreli yedek

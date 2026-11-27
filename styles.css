@@ -375,6 +375,11 @@ body.theme-light .pw-root:not(.is-dark) .pw-avatar,
 .pw-glyph-hole { fill: var(--bg); }
 .pw-lock-title { margin: 0; font-size: 19px; font-weight: 600; letter-spacing: -0.01em; }
 .pw-lock-sub { margin: 6px 0 26px; color: var(--muted); font-size: 13px; line-height: 1.5; }
+/* kurulum ekranı: kasanın oluşturulacağı klasör + var olan kasayı açma */
+.pw-lock-loc { display: flex; flex-wrap: wrap; justify-content: center; align-items: baseline; gap: 4px 6px; margin: -16px 0 22px; color: var(--faint); font-size: 12px; line-height: 1.5; }
+.pw-lock-path { color: var(--muted); font-family: var(--mono); font-size: 11.5px; overflow-wrap: anywhere; }
+.pw-lock-link { padding: 0; border: 0; background: none; color: var(--text); font-size: 12px; text-decoration: underline; text-underline-offset: 2px; cursor: pointer; }
+.pw-set-text span.pw-set-path { font-family: var(--mono); font-size: 11.5px; overflow-wrap: anywhere; }
 .pw-lock-form { display: grid; gap: 10px; width: 100%; }
 .pw-lock-field {
   display: flex;

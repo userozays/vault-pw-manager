@@ -16,6 +16,16 @@ export interface Host {
   openUrl?(url: string): void;
   /** Kasa klasörünü dosya yöneticisinde açar (yalnız masaüstü). */
   reveal?(): void;
+  /** Kasa konumu (yalnız masaüstü): göster, klasör seçtir, seçilene geç ya da taşı. */
+  location?: {
+    get(): Promise<{ path: string; default: string; custom: boolean }>;
+    /** Sistem diyaloğuyla klasör seçtirir; vazgeçilirse null. */
+    pick(): Promise<{ path: string; has_vault: boolean; same: boolean } | null>;
+    /** Son seçilen klasöre geçer (`switch`) ya da kasayı oraya taşır (`move`). */
+    set(mode: "switch" | "move"): Promise<void>;
+  };
+  /** Kasa başka klasörden açılacaksa arayüzü baştan yükler. */
+  reload?(): void;
   /** Kısayollar tüm pencerede mi geçerli (masaüstü) yoksa yalnız arayüz odaktayken mi. */
   globalKeys?: boolean;
   onReady?(): void;
@@ -346,6 +356,7 @@ export class VaultApp {
         glyph,
         h("h1", { class: "pw-lock-title" }, kind === "setup" ? "Kasanı oluştur" : APP_NAME),
         h("p", { class: "pw-lock-sub" }, kind === "setup" ? "Kayıtların bu parolayla, yalnız bu bilgisayarda şifrelenir. Parola hiçbir yerde saklanmaz; unutursan kurtarılamaz." : "Kilitli"),
+        kind === "setup" && this.io.location ? this.setupLocationHint() : null,
         form,
       ),
     );
@@ -416,6 +427,34 @@ export class VaultApp {
       move(parts, { opacity: [0, 1], y: [10, 0] }, { ...spring(0.15, 0.55), delay: stagger(0.05, { startDelay: 0.08 }) });
     }
     setTimeout(() => pw.input.focus(), reduced() ? 0 : 120);
+  }
+
+  /**
+   * Kurulum ekranında kasanın oluşturulacağı klasör. Kasa başka yere taşındıysa yanlışlıkla yeni (boş)
+   * kasa kurulmasın: "Var olan kasayı aç" o klasörü seçtirip oradaki kasaya geçer.
+   */
+  private setupLocationHint(): HTMLElement {
+    const loc = this.io.location!;
+    const path = h("span", { class: "pw-lock-path" }, "…");
+    void loc.get().then((l) => (path.textContent = l.path)).catch(() => (path.textContent = "?"));
+    const openOther = h("button", { class: "pw-lock-link", type: "button" }, "Var olan kasayı aç…");
+    openOther.addEventListener("click", async () => {
+      let picked: Awaited<ReturnType<typeof loc.pick>>;
+      try {
+        picked = await loc.pick();
+      } catch (err) {
+        return void this.toast((err as Error).message ?? String(err), "warn");
+      }
+      if (!picked) return;
+      if (!picked.has_vault) return void this.toast("Bu klasörde kasa yok. İçinde meta.json olan klasörü seç.", "warn");
+      try {
+        await loc.set("switch");
+      } catch (err) {
+        return void this.toast((err as Error).message ?? String(err), "warn");
+      }
+      (this.io.reload ?? (() => window.location.reload()))();
+    });
+    return h("div", { class: "pw-lock-loc" }, h("span", {}, "Konum: "), path, openOther);
   }
 
   /** Halka kalkar, kilit ekranı bulanıklaşıp çözülür, uygulama altından belirir. */
@@ -1443,9 +1482,51 @@ export class VaultApp {
           }),
         ),
         this.backupRow(row),
+        this.io.location ? this.locationRow(row, () => done(true)) : null,
       ),
       h("div", { class: "pw-modal-actions" }, h("button", { class: "pw-btn pw-btn-primary", onclick: () => done(true) }, "Tamam")),
     ]);
+  }
+
+  /** Kasa konumu: klasörü gösterir; Değiştir ile başka bir klasördeki kasaya geçer ya da kasayı oraya taşır. */
+  private locationRow(row: (title: string, sub: string, control: HTMLElement) => HTMLElement, closeSettings: () => void): HTMLElement {
+    const loc = this.io.location!;
+    const btn = h("button", { class: "pw-btn pw-set-btn", type: "button" }, icon("open"), "Değiştir…") as HTMLButtonElement;
+    const r = row("Kasa konumu", "…", btn);
+    const sub = r.querySelector<HTMLElement>(".pw-set-text span")!;
+    sub.classList.add("pw-set-path");
+    void loc.get().then((l) => (sub.textContent = l.custom ? l.path : `${l.path} (varsayılan)`)).catch(() => (sub.textContent = "Okunamadı"));
+    btn.addEventListener("click", async () => {
+      let picked: Awaited<ReturnType<typeof loc.pick>>;
+      try {
+        picked = await loc.pick();
+      } catch (err) {
+        return void this.toast((err as Error).message ?? String(err), "warn");
+      }
+      if (!picked) return;
+      if (picked.same) return void this.toast("Kasa zaten bu klasörde");
+      closeSettings();
+      const mode = picked.has_vault ? "switch" : "move";
+      const ok = await this.ask(
+        mode === "switch" ? "Bu klasördeki kasaya geçilsin mi?" : "Kasa bu klasöre taşınsın mı?",
+        mode === "switch"
+          ? `${picked.path} — Bu klasörde bir kasa var; Vault artık onu açar. Şu anki kasan yerinde kalır, silinmez. Kilidi açmak için o kasanın ana parolası gerekir.`
+          : `${picked.path} — Kayıtların şifreli hâlleriyle buraya kopyalanır, birebir aynı olduğu denetlenir, sonra eski klasörden silinir. Ana parolan değişmez.`,
+        mode === "switch" ? "Geç" : "Taşı",
+      );
+      if (!ok || !(await this.confirmDiscard())) return;
+      try {
+        await loc.set(mode);
+      } catch (err) {
+        return void this.toast((err as Error).message ?? String(err), "warn");
+      }
+      // Kasa yeni klasörden açılsın: kilitle ve arayüzü baştan yükle.
+      this.dirty = false;
+      this.pendingDraft = null;
+      this.vault.lock();
+      (this.io.reload ?? (() => window.location.reload()))();
+    });
+    return r;
   }
 
   private backupRow(row: (title: string, sub: string, control: HTMLElement) => HTMLElement): HTMLElement {

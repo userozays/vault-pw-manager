@@ -9,6 +9,7 @@ use std::{
     fs,
     io::{self, Write},
     path::{Path, PathBuf},
+    sync::Mutex,
     time::{Duration, UNIX_EPOCH},
 };
 use tauri::{AppHandle, Manager, State, WebviewUrl, WebviewWindowBuilder};
@@ -17,6 +18,8 @@ use tauri_plugin_opener::OpenerExt;
 
 /// Arayüzün gördüğü sanal kök (`vault/...`); burada gerçek klasöre çevrilir.
 const ROOT: &str = "vault";
+/// Varsayılan kasa klasörünün adı (Belgeler altında).
+const DIR_NAME: &str = "Vault PW Manager";
 const CLIPBOARD_CLEAR: Duration = Duration::from_secs(30);
 const MAX_IMPORT_BYTES: u64 = 50 * 1024 * 1024;
 
@@ -27,10 +30,22 @@ fn err(e: impl std::fmt::Display) -> String {
 }
 
 struct Data {
-    dir: PathBuf,
+    /// Kasa klasörü. Ayarlardan değişebilir; değişince arayüz yeniden yüklenir.
+    dir: Mutex<PathBuf>,
+    /// Varsayılan konum (Belgeler/Vault PW Manager).
+    default_dir: PathBuf,
+    /// Seçilen konumun yazıldığı dosya (uygulama ayar klasöründe).
+    config: Option<PathBuf>,
+    /// Kullanıcının sistem diyaloğunda son seçtiği klasör. `set_location` yalnız bunu kabul eder:
+    /// arayüz kendi uydurduğu bir yolu kasa klasörü yapamaz.
+    picked: Mutex<Option<PathBuf>>,
 }
 
 impl Data {
+    fn dir(&self) -> PathBuf {
+        self.dir.lock().unwrap().clone()
+    }
+
     /// `vault/...` göreli yolunu kasa klasörü içindeki mutlak yola çevirir; dışarı çıkan her yolu reddeder.
     fn resolve(&self, rel: &str) -> R<PathBuf> {
         let norm = rel.replace('\\', "/");
@@ -41,7 +56,7 @@ impl Data {
         } else {
             return Err("izin verilmeyen yol".into());
         };
-        let mut out = self.dir.clone();
+        let mut out = self.dir();
         for part in rest.split('/') {
             match part {
                 "" | "." => {}
@@ -185,15 +200,225 @@ struct Info {
 
 #[tauri::command]
 fn app_info(data: State<'_, Data>) -> Info {
-    Info { platform: std::env::consts::OS, data: data.dir.to_string_lossy().into_owned() }
+    Info { platform: std::env::consts::OS, data: data.dir().to_string_lossy().into_owned() }
 }
 
 #[tauri::command]
 async fn reveal(app: AppHandle, data: State<'_, Data>) -> R<()> {
-    fs::create_dir_all(&data.dir).map_err(err)?;
+    let dir = data.dir();
+    fs::create_dir_all(&dir).map_err(err)?;
     app.opener()
-        .open_path(data.dir.to_string_lossy(), None::<&str>)
+        .open_path(dir.to_string_lossy(), None::<&str>)
         .map_err(err)
+}
+
+// ---------- kasa konumu (Ayarlar) ----------
+
+#[derive(Serialize)]
+struct Location {
+    path: String,
+    default: String,
+    custom: bool,
+}
+
+#[tauri::command]
+fn vault_location(data: State<'_, Data>) -> Location {
+    let dir = data.dir();
+    Location {
+        path: dir.to_string_lossy().into_owned(),
+        default: data.default_dir.to_string_lossy().into_owned(),
+        custom: !same_dir(&dir, &data.default_dir),
+    }
+}
+
+#[derive(Serialize)]
+struct Candidate {
+    path: String,
+    /// Seçilen klasörde zaten bir kasa var (meta.json).
+    has_vault: bool,
+    /// Seçilen klasör şu anki kasa klasörü.
+    same: bool,
+}
+
+/// Klasör seçtirir. Seçilen klasörde kasa yok ama içinde "Vault PW Manager" kasası varsa o alınır.
+#[tauri::command]
+async fn pick_location(app: AppHandle, data: State<'_, Data>) -> R<Option<Candidate>> {
+    let Some(fp) = app.dialog().file().set_title("Kasa klasörünü seç").blocking_pick_folder() else {
+        return Ok(None);
+    };
+    let mut path = fp.into_path().map_err(err)?;
+    let nested = path.join(DIR_NAME);
+    if !path.join("meta.json").exists() && nested.join("meta.json").exists() {
+        path = nested;
+    }
+    // Yazılışça aynıysa "zaten burada". Bağlantı (junction) üzerinden aynı klasöre çıkan ama başka
+    // yazılan bir yol seçilebilir: kasaya doğrudan o yoldan geçilir (taşıma ise set_location'da engellenir).
+    let cand = Candidate {
+        path: path.to_string_lossy().into_owned(),
+        has_vault: path.join("meta.json").exists(),
+        same: same_text(&path, &data.dir()),
+    };
+    *data.picked.lock().unwrap() = Some(path);
+    Ok(Some(cand))
+}
+
+/// Son seçilen klasöre geçer. `switch`: oradaki kasayı açar, şu anki yerinde kalır.
+/// `move`: şu anki kasayı oraya kopyalar, birebir aynı olduğunu denetler, sonra eskisini siler.
+#[tauri::command]
+async fn set_location(data: State<'_, Data>, mode: String) -> R<()> {
+    let target = data.picked.lock().unwrap().take().ok_or("Önce bir klasör seç.")?;
+    let current = data.dir();
+    if same_text(&target, &current) {
+        return Err("Kasa zaten bu klasörde.".into());
+    }
+    match mode.as_str() {
+        "switch" => {
+            if !target.join("meta.json").exists() {
+                return Err("Bu klasörde kasa yok.".into());
+            }
+        }
+        "move" => {
+            // Bağlantı üzerinden aynı klasörse kopyalayıp silmek kasayı yok eder: kesinlikle yapma.
+            if same_dir(&target, &current) {
+                return Err("Seçilen klasör, bağlantı üzerinden şu anki kasanın kendisi.".into());
+            }
+            if target.join("meta.json").exists() {
+                return Err("Bu klasörde zaten bir kasa var; taşımak yerine ona geçebilirsin.".into());
+            }
+            if !current.join("meta.json").exists() {
+                return Err("Taşınacak bir kasa yok.".into());
+            }
+            move_vault(&current, &target).map_err(|e| format!("Taşınamadı: {e}"))?;
+        }
+        _ => return Err("bilinmeyen işlem".into()),
+    }
+    save_location(&data, &target).map_err(|e| format!("Konum kaydedilemedi: {e}"))?;
+    *data.dir.lock().unwrap() = target;
+    Ok(())
+}
+
+/// Kasa dosyaları (k-*.json, folders.json, meta.json); yarım kalmış .tmp dosyaları hariç.
+fn vault_files(dir: &Path) -> io::Result<Vec<PathBuf>> {
+    let mut files: Vec<PathBuf> = fs::read_dir(dir)?
+        .flatten()
+        .filter(|e| e.file_type().map(|t| t.is_file()).unwrap_or(false))
+        .map(|e| e.path())
+        .filter(|p| p.extension().and_then(|x| x.to_str()) == Some("json"))
+        .collect();
+    // meta.json en son kopyalanır: yarıda kalırsa yeni klasör kasa gibi görünmez.
+    files.sort_by_key(|p| p.file_name().map(|n| n == "meta.json").unwrap_or(false));
+    Ok(files)
+}
+
+fn move_vault(from: &Path, to: &Path) -> io::Result<()> {
+    fs::create_dir_all(to)?;
+    let files = vault_files(from)?;
+    for f in &files {
+        let dest = to.join(f.file_name().unwrap());
+        fs::copy(f, &dest)?;
+        if fs::read(f)? != fs::read(&dest)? {
+            return Err(io::Error::new(io::ErrorKind::Other, "kopya doğrulanamadı"));
+        }
+    }
+    // Kopya tamam; eskiler silinir. meta.json önce: yarıda kalırsa eski klasör kasa gibi görünmez.
+    for f in files.iter().rev() {
+        fs::remove_file(f)?;
+    }
+    let _ = fs::remove_dir(from); // boşsa (ya da bağlantıysa) klasörü de kaldır
+    Ok(())
+}
+
+fn save_location(data: &Data, dir: &Path) -> io::Result<()> {
+    let Some(cfg) = &data.config else {
+        return Err(io::Error::new(io::ErrorKind::Other, "ayar klasörü yok"));
+    };
+    if same_dir(dir, &data.default_dir) {
+        return match fs::remove_file(cfg) {
+            Err(e) if e.kind() != io::ErrorKind::NotFound => Err(e),
+            _ => Ok(()),
+        };
+    }
+    if let Some(parent) = cfg.parent() {
+        fs::create_dir_all(parent)?;
+    }
+    fs::write(cfg, dir.to_string_lossy().as_bytes())
+}
+
+/// İki yol aynı klasör mü (bağlantılar çözülerek; çözülemezse yazılışa bakılır).
+fn same_dir(a: &Path, b: &Path) -> bool {
+    match (fs::canonicalize(a), fs::canonicalize(b)) {
+        (Ok(x), Ok(y)) => x == y,
+        _ => same_text(a, b),
+    }
+}
+
+/// Yazılışça aynı yol mu (büyük/küçük harf, ayırıcı ve sondaki ayırıcı önemsiz).
+fn same_text(a: &Path, b: &Path) -> bool {
+    let norm = |p: &Path| p.to_string_lossy().replace('/', "\\").trim_end_matches('\\').to_lowercase();
+    norm(a) == norm(b)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn temp(name: &str) -> PathBuf {
+        let d = std::env::temp_dir().join(format!("vpm-test-{name}-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&d);
+        fs::create_dir_all(&d).unwrap();
+        d
+    }
+
+    #[test]
+    fn tasima_kopyalar_dogrular_eskiyi_siler() {
+        let root = temp("move");
+        let from = root.join("eski");
+        let to = root.join("yeni").join("Kasa");
+        fs::create_dir_all(&from).unwrap();
+        fs::write(from.join("meta.json"), "{\"salt\":1}").unwrap();
+        fs::write(from.join("k-1.json"), "sifreli-1").unwrap();
+        fs::write(from.join("folders.json"), "sifreli-f").unwrap();
+        fs::write(from.join("k-2.json.123.tmp"), "yarim").unwrap();
+        move_vault(&from, &to).unwrap();
+        assert_eq!(fs::read_to_string(to.join("meta.json")).unwrap(), "{\"salt\":1}");
+        assert_eq!(fs::read_to_string(to.join("k-1.json")).unwrap(), "sifreli-1");
+        assert_eq!(fs::read_to_string(to.join("folders.json")).unwrap(), "sifreli-f");
+        assert!(!to.join("k-2.json.123.tmp").exists(), "yarım dosya taşınmaz");
+        assert!(!from.join("meta.json").exists() && !from.join("k-1.json").exists());
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn yol_karsilastirma() {
+        assert!(same_text(Path::new("C:\\A\\Kasa\\"), Path::new("c:/a/kasa")));
+        assert!(!same_text(Path::new("C:\\A\\Kasa"), Path::new("C:\\A\\Kasa2")));
+        let d = temp("same");
+        assert!(same_dir(&d, &d.join(".")));
+        let _ = fs::remove_dir_all(&d);
+    }
+
+    /// Belgeler/Vault PW Manager başka bir klasöre bağlantıysa (junction) ikisi aynı klasör sayılmalı:
+    /// yoksa "taşı" dosyaları kendi üzerine kopyalayıp silerdi.
+    #[cfg(windows)]
+    #[test]
+    fn baglanti_ayni_klasor_sayilir() {
+        let root = temp("junction");
+        let real = root.join("gercek");
+        let link = root.join("baglanti");
+        fs::create_dir_all(&real).unwrap();
+        let ok = std::process::Command::new("cmd")
+            .args(["/C", "mklink", "/J"])
+            .arg(&link)
+            .arg(&real)
+            .output()
+            .map(|o| o.status.success())
+            .unwrap_or(false);
+        assert!(ok, "junction oluşturulamadı");
+        assert!(same_dir(&link, &real));
+        assert!(!same_text(&link, &real));
+        let _ = fs::remove_dir(&link);
+        let _ = fs::remove_dir_all(&root);
+    }
 }
 
 /// Yalnız http(s) bağlantıları varsayılan tarayıcıda açılır.
@@ -296,20 +521,31 @@ fn migrate(docs: &Path, dir: &Path) {
     }
 }
 
-fn data_dir(app: &tauri::App) -> PathBuf {
-    if cfg!(debug_assertions) {
-        if let Ok(d) = std::env::var("VPM_DATA") {
-            return d.into(); // test: gerçek kasaya dokunma
-        }
-    }
+/// Kasa klasörü: Ayarlar'dan seçilen konum (location.txt) ya da Belgeler/Vault PW Manager.
+fn data_dir(app: &tauri::App) -> Data {
     let docs = app
         .path()
         .document_dir()
         .or_else(|_| app.path().home_dir().map(|h| h.join("Documents")))
         .expect("Belgeler klasörü bulunamadı");
-    let dir = docs.join("Vault PW Manager");
-    migrate(&docs, &dir);
-    dir
+    let default_dir = docs.join(DIR_NAME);
+    let config = app.path().app_config_dir().ok().map(|d| d.join("location.txt"));
+    let new = |dir: PathBuf, config: Option<PathBuf>| Data { dir: Mutex::new(dir), default_dir: default_dir.clone(), config, picked: Mutex::new(None) };
+    if cfg!(debug_assertions) {
+        if let Ok(d) = std::env::var("VPM_DATA") {
+            return new(d.into(), None); // test: gerçek kasaya ve ayara dokunma
+        }
+    }
+    let chosen = config
+        .as_ref()
+        .and_then(|c| fs::read_to_string(c).ok())
+        .map(|s| PathBuf::from(s.trim()))
+        .filter(|p| p.is_absolute());
+    let dir = chosen.unwrap_or_else(|| {
+        migrate(&docs, &default_dir);
+        default_dir.clone()
+    });
+    new(dir, config)
 }
 
 fn main() {
@@ -318,12 +554,13 @@ fn main() {
         .plugin(tauri_plugin_opener::init())
         .invoke_handler(tauri::generate_handler![
             fs_exists, fs_read, fs_read_many, fs_write, fs_remove, fs_mkdir, fs_list, fs_scan, fs_stat,
-            app_info, reveal, open_link, copy_text, export_file, pick_import
+            app_info, reveal, open_link, copy_text, export_file, pick_import,
+            vault_location, pick_location, set_location
         ])
         .setup(|app| {
-            let dir = data_dir(app);
-            fs::create_dir_all(&dir)?;
-            app.manage(Data { dir });
+            let data = data_dir(app);
+            fs::create_dir_all(data.dir())?;
+            app.manage(data);
 
             #[cfg_attr(not(target_os = "macos"), allow(unused_mut))]
             let mut win = WebviewWindowBuilder::new(app, "main", WebviewUrl::default())

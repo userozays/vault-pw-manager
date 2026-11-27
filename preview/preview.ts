@@ -43,7 +43,17 @@ const demo: [string, string, string, string, string, boolean][] = [
     const c = blankEntry("card"); Object.assign(c, { name: "Kredi kartı", folder: "Kredi Kartları", card: { holder: "ÖRNEK KİŞİ", number: "4111111111111111", expiry: "08/29", cvv: "123" } }); await vault.save(c);
     if (mode === "lock") vault.lock();
   }
-  const app = new VaultApp(host, vault, { globalKeys: true });
+  // Önizlemede kasa konumu ayarı sahte: klasör seçimi ?pick=vault|empty|same ile taklit edilir.
+  const fakeDir = "C:\\Users\\ornek\\Documents\\Vault PW Manager";
+  const location = {
+    get: async () => ({ path: fakeDir, default: fakeDir, custom: false }),
+    pick: async () => {
+      const p = q.get("pick") ?? "empty";
+      return { path: p === "same" ? fakeDir : "D:\\Yedek\\Kasa", has_vault: p === "vault", same: p === "same" };
+    },
+    set: async (mode: "switch" | "move") => void console.log("konum:", mode),
+  };
+  const app = new VaultApp(host, vault, { globalKeys: true, location, reload: () => console.log("yeniden yükle") });
   (window as any).vaultApp = app;
   await app.start();
   if (q.get("select")) {
