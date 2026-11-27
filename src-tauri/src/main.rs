@@ -227,7 +227,7 @@ fn vault_location(data: State<'_, Data>) -> Location {
     Location {
         path: dir.to_string_lossy().into_owned(),
         default: data.default_dir.to_string_lossy().into_owned(),
-        custom: !same_dir(&dir, &data.default_dir),
+        custom: !same_text(&dir, &data.default_dir),
     }
 }
 
@@ -332,7 +332,9 @@ fn save_location(data: &Data, dir: &Path) -> io::Result<()> {
     let Some(cfg) = &data.config else {
         return Err(io::Error::new(io::ErrorKind::Other, "ayar klasörü yok"));
     };
-    if same_dir(dir, &data.default_dir) {
+    // Yazılışa bakılır: varsayılan yol başka bir klasöre bağlantıysa (junction) o klasör yine kaydedilmeli,
+    // yoksa bağlantı silinince kasa bulunamaz.
+    if same_text(dir, &data.default_dir) {
         return match fs::remove_file(cfg) {
             Err(e) if e.kind() != io::ErrorKind::NotFound => Err(e),
             _ => Ok(()),
@@ -416,6 +418,16 @@ mod tests {
         assert!(ok, "junction oluşturulamadı");
         assert!(same_dir(&link, &real));
         assert!(!same_text(&link, &real));
+
+        // Varsayılan yol bağlantıyken gerçek klasör seçilirse konum kaydedilmeli (bağlantı silinebilsin).
+        let cfg = root.join("ayar").join("location.txt");
+        let data = Data { dir: Mutex::new(link.clone()), default_dir: link.clone(), config: Some(cfg.clone()), picked: Mutex::new(None) };
+        save_location(&data, &real).unwrap();
+        assert_eq!(fs::read_to_string(&cfg).unwrap(), real.to_string_lossy());
+        // Varsayılanın kendisi seçilince kayıt silinir.
+        save_location(&data, &link).unwrap();
+        assert!(!cfg.exists());
+
         let _ = fs::remove_dir(&link);
         let _ = fs::remove_dir_all(&root);
     }
