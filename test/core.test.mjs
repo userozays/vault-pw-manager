@@ -203,3 +203,97 @@ test("şifreli yedek: kurcalanan kayıt sayılır, yedek olmayan dosya null", as
   assert.equal(parseBackup("ad,parola\nx,y"), null);
   assert.throws(() => parseBackup('{"format":"vault-pw-manager-backup","v":2}'));
 });
+
+// ---- klasörler ----
+
+const entryIn = async (v, name, folder) => { const e = blankEntry(); e.name = name; e.folder = folder; return v.save(e); };
+
+test("klasör: boş klasör oluşturulur, şifreli saklanır, kilit sonrası geri gelir", async () => {
+  const fs = new MemFs(); const v = new Vault(fs);
+  await v.create("pw");
+  assert.equal(await v.addFolder("  Gizli   Bankalar "), "Gizli Bankalar");
+  await entryIn(v, "Gmail", "E-posta");
+  assert.deepEqual(v.folders(), ["E-posta", "Gizli Bankalar"]);
+  const disk = [...fs.files.values()].map(f => f.data).join("\n");
+  assert.ok(!disk.includes("Gizli Bankalar"), "klasör adı düz metin");
+  v.lock();
+  assert.deepEqual(v.folders(), []);
+  assert.equal(await v.unlock("pw"), true);
+  assert.deepEqual(v.folders(), ["E-posta", "Gizli Bankalar"]);
+});
+
+test("klasör: aynı ad (büyük/küçük harf, Türkçe İ/i) ve geçersiz ad reddedilir", async () => {
+  const v = new Vault(new MemFs()); await v.create("pw");
+  await v.addFolder("İş");
+  await assert.rejects(() => v.addFolder("iş"), /zaten var/);
+  await assert.rejects(() => v.addFolder("   "), /boş/);
+  await assert.rejects(() => v.addFolder("a/b"), /kullanılamaz/);
+  await assert.rejects(() => v.addFolder("x".repeat(61)), /60/);
+  assert.equal(v.findFolder("İŞ"), "İş");
+});
+
+test("klasör: yeniden adlandırma kayıtları taşır, çakışmayı reddeder", async () => {
+  const v = new Vault(new MemFs()); await v.create("pw");
+  const a = await entryIn(v, "A", "Oyun");
+  const b = await entryIn(v, "B", "Oyun");
+  const c = await entryIn(v, "C", "Alışveriş");
+  assert.equal(await v.renameFolder("Oyun", "Oyunlar"), 2);
+  assert.deepEqual([v.get(a.id).folder, v.get(b.id).folder, v.get(c.id).folder], ["Oyunlar", "Oyunlar", "Alışveriş"]);
+  assert.deepEqual(v.folders(), ["Alışveriş", "Oyunlar"]);
+  await assert.rejects(() => v.renameFolder("Oyunlar", "alışveriş"), /zaten var/);
+  assert.equal(await v.renameFolder("Oyunlar", "OYUNLAR"), 2, "yalnız harf büyüklüğü değişebilir");
+  assert.deepEqual(v.folders(), ["Alışveriş", "OYUNLAR"]);
+});
+
+test("klasör: silmek kayıtları silmez, klasörsüz bırakır", async () => {
+  const v = new Vault(new MemFs()); await v.create("pw");
+  const a = await entryIn(v, "A", "Eski");
+  await v.addFolder("Boş");
+  assert.equal(await v.deleteFolder("Eski"), 1);
+  assert.equal(v.all().length, 1);
+  assert.equal(v.get(a.id).folder, "");
+  assert.equal(await v.deleteFolder("Boş"), 0);
+  assert.deepEqual(v.folders(), []);
+});
+
+test("klasör: son kaydı taşınan klasör boş olarak kalır", async () => {
+  const v = new Vault(new MemFs()); await v.create("pw");
+  const a = await entryIn(v, "A", "EDevlet");
+  await v.save({ ...v.get(a.id), folder: "Resmi" });
+  assert.deepEqual(v.folders(), ["EDevlet", "Resmi"]);
+  v.lock(); await v.unlock("pw");
+  assert.deepEqual(v.folders(), ["EDevlet", "Resmi"]);
+});
+
+test("klasör: öbür makinede açılan ve silinen klasör yakalanır", async () => {
+  const fs = new MemFs(); const mac = new Vault(fs); await mac.create("pw");
+  const win = new Vault(fs); assert.equal(await win.unlock("pw"), true);
+  await mac.addFolder("Ortak");
+  assert.equal((await win.refresh()).changed, true);
+  assert.deepEqual(win.folders(), ["Ortak"]);
+  assert.equal((await win.refresh()).changed, false);
+  await fs.remove(`${DIR}/folders.json`);
+  assert.equal((await win.refresh()).changed, true);
+  assert.deepEqual(win.folders(), []);
+});
+
+test("klasör: şifreli yedek boş klasörleri taşır; eski yedek klasörsüz de açılır", async () => {
+  const src = new Vault(new MemFs()); await src.create("pw");
+  await src.addFolder("Boş Klasör");
+  await entryIn(src, "A", "Dolu");
+  const text = await src.backup();
+  assert.ok(!text.includes("Boş Klasör"));
+  const r = await src.openBackup(parseBackup(text));
+  assert.deepEqual(r.folders, ["Boş Klasör", "Dolu"]);
+  const dst = new Vault(new MemFs()); await dst.create("pw2");
+  await dst.mergeFolders((await dst.openBackup(parseBackup(text), "pw")).folders);
+  assert.deepEqual(dst.folders(), ["Boş Klasör", "Dolu"]);
+  const old = JSON.parse(text); delete old.folders;
+  assert.deepEqual((await src.openBackup(parseBackup(JSON.stringify(old)))).folders, []);
+});
+
+test("Bitwarden JSON boş klasörleri de yazar", () => {
+  const a = blankEntry("login"); a.name = "X"; a.folder = "Dolu";
+  const json = JSON.parse(toBitwardenJson([a], ["Boş", "Dolu"]));
+  assert.deepEqual(json.folders.map(f => f.name), ["Boş", "Dolu"]);
+});

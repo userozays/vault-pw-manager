@@ -1,6 +1,6 @@
 import { generatePassword, strength, type GenOptions } from "../crypto";
 import { parseImport, toBitwardenJson, toCsv } from "../importers";
-import { BACKUP_EXT, Vault, blankEntry, parseBackup, sameEntry, type Backup, type Entry, type EntryType } from "../store";
+import { BACKUP_EXT, Vault, blankEntry, checkFolderName, parseBackup, sameEntry, sameFolder, type Backup, type Entry, type EntryType } from "../store";
 import { decode, move, reduced, shake, spring, stagger } from "./motion";
 
 export const APP_NAME = "Vault PW Manager";
@@ -518,10 +518,136 @@ export class VaultApp {
 
   // ---------- kenar çubuğu ----------
 
+  /** Klasörler ve içlerindeki kayıt sayısı; boş klasörler 0 ile gelir. */
   private folders(): [string, number][] {
-    const counts = new Map<string, number>();
-    for (const e of this.vault.all()) if (e.folder) counts.set(e.folder, (counts.get(e.folder) ?? 0) + 1);
-    return [...counts].sort((a, b) => a[0].localeCompare(b[0], "tr"));
+    const all = this.vault.all();
+    return this.vault.folders().map((f): [string, number] => [f, all.filter((e) => sameFolder(e.folder, f)).length]);
+  }
+
+  // ---------- klasör yönetimi ----------
+
+  /** Tek alanlı ad penceresi. Kaydet'e basınca `apply` çalışır; hata verirse pencere açık kalır ve mesaj gösterilir. */
+  private askName(o: { title: string; text: string; value?: string; okLabel: string; apply: (name: string) => Promise<void>; extra?: (done: (v: "extra") => void) => HTMLElement }): Promise<"ok" | "extra" | null> {
+    return this.modal<"ok" | "extra">((done) => {
+      const input = h("input", { class: "pw-input", type: "text", placeholder: "Klasör adı", autocomplete: "off", spellcheck: "false", maxlength: 60, "aria-label": "Klasör adı" }) as HTMLInputElement;
+      input.value = o.value ?? "";
+      const note = h("p", { class: "pw-muted pw-modal-note" }, o.text);
+      const go = h("button", { class: "pw-btn pw-btn-primary", type: "submit" }, o.okLabel) as HTMLButtonElement;
+      const form = h(
+        "form",
+        { class: "pw-modal-form pw-name-form" },
+        input,
+        h("div", { class: "pw-modal-actions" }, o.extra ? o.extra(done) : null, h("button", { class: "pw-btn pw-btn-ghost", type: "button", onclick: () => done(null) }, "Vazgeç"), go),
+      );
+      form.addEventListener("submit", async (ev) => {
+        ev.preventDefault();
+        if (go.disabled) return;
+        go.disabled = true;
+        try {
+          await o.apply(input.value);
+          done("ok");
+        } catch (err) {
+          go.disabled = false;
+          note.textContent = (err as Error).message;
+          note.classList.add("is-warn");
+          input.select();
+          shake(form);
+        }
+      });
+      setTimeout(() => (input.focus(), input.select()), 40);
+      return [h("h2", {}, o.title), note, form];
+    });
+  }
+
+  private async createFolder(): Promise<string | null> {
+    let created: string | null = null;
+    await this.askName({
+      title: "Yeni klasör",
+      text: "Kayıtlarını gruplamak için bir ad ver.",
+      okLabel: "Oluştur",
+      apply: async (name) => void (created = await this.vault.addFolder(name)),
+    });
+    if (!created) return null;
+    this.filter = { ...this.filter, folder: created, favorites: false };
+    this.renderSidebar(true);
+    this.renderList(true);
+    this.toast(`"${created}" klasörü oluşturuldu`);
+    return created;
+  }
+
+  private async editFolder(name: string): Promise<void> {
+    const count = this.vault.all().filter((e) => sameFolder(e.folder, name)).length;
+    let renamed = "";
+    const r = await this.askName({
+      title: "Klasörü düzenle",
+      text: count ? `Bu klasörde ${count} kayıt var. Ad değişince kayıtlar da yeni klasöre geçer.` : "Bu klasör boş.",
+      value: name,
+      okLabel: "Kaydet",
+      apply: async (to) => {
+        await this.vault.renameFolder(name, to);
+        renamed = this.vault.findFolder(to) ?? to.trim();
+      },
+      extra: (done) => h("button", { class: "pw-btn pw-btn-ghost pw-danger-text pw-left", type: "button", onclick: () => done("extra") }, icon("trash"), h("span", {}, "Klasörü sil")),
+    });
+    if (r === "ok") {
+      if (this.filter.folder === name) this.filter.folder = renamed;
+      this.afterFolderChange();
+      if (renamed !== name) this.toast(`Klasör "${renamed}" olarak adlandırıldı`);
+    } else if (r === "extra") {
+      const ok = await this.ask(
+        `"${name}" klasörü silinsin mi?`,
+        count ? `İçindeki ${count} kayıt silinmez; klasörsüz olarak "Tümü" altında kalır.` : "Klasör boş, hiçbir kayıt etkilenmez.",
+        "Klasörü sil",
+        true,
+      );
+      if (!ok) return;
+      await this.vault.deleteFolder(name);
+      if (this.filter.folder === name) this.filter.folder = null;
+      this.afterFolderChange();
+      this.toast(`"${name}" klasörü silindi`);
+    }
+  }
+
+  /** Kaydı başka bir klasöre taşır (ya da klasörden çıkarır). */
+  private async moveEntry(e: Entry): Promise<void> {
+    const NEW = "\u0000yeni";
+    const current = this.vault.findFolder(e.folder) ?? "";
+    const pick = await this.modal<string>((done) => [
+      h("h2", {}, "Klasöre taşı"),
+      h("p", { class: "pw-muted" }, `"${e.name}" hangi klasörde dursun?`),
+      h(
+        "div",
+        { class: "pw-options pw-folder-options" },
+        ...this.folders().map(([f, n]) =>
+          h("button", { class: `pw-option pw-folder-option${f === current ? " is-current" : ""}`, onclick: () => done(f) }, icon("folder"), h("strong", {}, f), h("span", {}, f === current ? "Şu an burada" : `${n} kayıt`)),
+        ),
+      ),
+      // Yeni klasör ve klasörden çıkarma, liste uzayıp kaydırılsa da görünür kalsın diye altta.
+      h(
+        "div",
+        { class: "pw-modal-actions" },
+        h("button", { class: "pw-btn pw-btn-ghost pw-btn-icon pw-left", type: "button", onclick: () => done(NEW) }, icon("plus"), h("span", {}, "Yeni klasör")),
+        current ? h("button", { class: "pw-btn pw-btn-ghost", type: "button", onclick: () => done("") }, "Klasörden çıkar") : null,
+        h("button", { class: "pw-btn pw-btn-ghost", type: "button", onclick: () => done(null) }, "Vazgeç"),
+      ),
+    ]);
+    if (pick === null || pick === current) return;
+    let target = pick;
+    if (pick === NEW) {
+      let created = "";
+      const r = await this.askName({ title: "Yeni klasör", text: `"${e.name}" bu klasöre taşınacak.`, okLabel: "Oluştur ve taşı", apply: async (name) => void (created = await this.vault.addFolder(name)) });
+      if (r !== "ok") return;
+      target = created;
+    }
+    await this.vault.save({ ...e, folder: target });
+    this.afterFolderChange();
+    this.toast(target ? `"${e.name}" → ${target}` : `"${e.name}" klasörden çıkarıldı`);
+  }
+
+  private afterFolderChange(): void {
+    this.renderSidebar(true);
+    this.renderList(false);
+    if (this.view.mode === "show") this.renderDetail(false);
   }
 
   private renderSidebar(animatePill: boolean): void {
@@ -548,13 +674,33 @@ export class VaultApp {
       this.renderList(true);
     };
     const folders = this.folders();
+    // Seçili klasör başka yerden (ör. öbür makinede) silindiyse "Tümü"ne dön.
+    if (this.filter.folder && !folders.some(([f]) => f === this.filter.folder)) this.filter.folder = null;
     const kids: HTMLElement[] = [
       navPill,
       item("Tümü", all.length, !this.filter.folder && !this.filter.favorites, pick(null), "all"),
       item("Favoriler", all.filter((e) => e.favorite).length, this.filter.favorites, pick(null, true), "star"),
+      h(
+        "div",
+        { class: "pw-nav-head" },
+        h("span", {}, "Klasörler"),
+        h("button", { class: "pw-nav-add", type: "button", title: "Yeni klasör", "aria-label": "Yeni klasör", onclick: () => void this.createFolder() }, icon("plus")),
+      ),
     ];
-    if (folders.length) kids.push(h("div", { class: "pw-nav-head" }, "Klasörler"));
-    kids.push(...folders.map(([f, n]) => item(f, n, this.filter.folder === f, pick(f), "folder")));
+    // Klasör satırı: seçme düğmesi + üzerine gelince görünen düzenle düğmesi (iç içe düğme olmasın diye kardeş).
+    for (const [f, n] of folders) {
+      const on = this.filter.folder === f;
+      const row = item(f, n, on, pick(f), "folder");
+      const editBtn = h("button", { class: "pw-nav-edit", type: "button", title: `"${f}" klasörünü düzenle`, "aria-label": `${f} klasörünü düzenle`, onclick: () => void this.editFolder(f) }, icon("edit"));
+      const group = h("div", { class: "pw-nav-group" }, row, editBtn);
+      group.addEventListener("contextmenu", (ev) => {
+        ev.preventDefault();
+        void this.editFolder(f);
+      });
+      if (on) active = group;
+      kids.push(group);
+    }
+    if (!folders.length) kids.push(h("button", { class: "pw-nav-hint", type: "button", onclick: () => void this.createFolder() }, "+ Klasör oluştur"));
     nav.replaceChildren(...kids);
     this.slidePill(navPill, active, animatePill);
   }
@@ -584,7 +730,7 @@ export class VaultApp {
     return this.vault
       .all()
       .filter((e) => (this.filter.favorites ? e.favorite : true))
-      .filter((e) => (this.filter.folder ? e.folder === this.filter.folder : true))
+      .filter((e) => (this.filter.folder ? sameFolder(e.folder, this.filter.folder) : true))
       .filter((e) => !q || [e.name, e.username, hostOf(e.url), e.folder].some((s) => s.toLocaleLowerCase("tr").includes(q)))
       .sort((a, b) => Number(b.favorite) - Number(a.favorite) || a.name.localeCompare(b.name, "tr"));
   }
@@ -599,15 +745,14 @@ export class VaultApp {
     const entries = this.visible();
     if (!entries.length) {
       const empty = this.vault.all().length === 0;
+      const emptyFolder = !!this.filter.folder && !this.filter.query.trim() && !this.vault.all().some((e) => sameFolder(e.folder, this.filter.folder!));
+      const [title, sub] = empty
+        ? ["Kasa boş", "+ ile ilk kaydını ekle ya da başka bir yöneticiden içe aktar."]
+        : emptyFolder
+          ? ["Klasör boş", "+ ile bu klasöre yeni kayıt ekle ya da bir kaydı açıp Taşı ile buraya al."]
+          : ["Sonuç yok", "Aramayı ya da filtreyi değiştir."];
       listPill.dataset.on = "";
-      list.replaceChildren(
-        h(
-          "div",
-          { class: "pw-empty" },
-          h("div", { class: "pw-empty-title" }, empty ? "Kasa boş" : "Sonuç yok"),
-          h("div", { class: "pw-empty-sub" }, empty ? "+ ile ilk kaydını ekle ya da başka bir yöneticiden içe aktar." : "Aramayı ya da filtreyi değiştir."),
-        ),
-      );
+      list.replaceChildren(h("div", { class: "pw-empty" }, h("div", { class: "pw-empty-title" }, title), h("div", { class: "pw-empty-sub" }, sub)));
       if (animate) move(list.firstElementChild!, { opacity: [0, 1], y: [6, 0] }, spring(0.15, 0.4));
       return;
     }
@@ -719,6 +864,7 @@ export class VaultApp {
       this.renderList(false);
     });
     const edit = h("button", { class: "pw-btn", onclick: () => this.edit(e) }, icon("edit"), h("span", {}, "Düzenle"));
+    const moveBtn = h("button", { class: "pw-icon-btn pw-move", title: "Klasöre taşı", "aria-label": "Klasöre taşı", onclick: () => void this.moveEntry(e) }, icon("folder"));
     const del = this.deleteButton(e);
 
     const fields: HTMLElement[] = [];
@@ -737,7 +883,7 @@ export class VaultApp {
     return h(
       "div",
       { class: "pw-detail-inner" },
-      this.detailBar(star, del, edit),
+      this.detailBar(star, moveBtn, del, edit),
       h(
         "div",
         { class: "pw-detail-scroll" },
@@ -931,8 +1077,18 @@ export class VaultApp {
         name.el.focus();
         return;
       }
+      let folder = "";
+      if (d.folder.trim()) {
+        try {
+          // "banka" yazıldıysa var olan "Banka" klasörüne gider, yeni bir kopya açılmaz.
+          folder = this.vault.findFolder(d.folder) ?? checkFolderName(d.folder);
+        } catch (err) {
+          this.toast((err as Error).message, "warn");
+          return;
+        }
+      }
       save.setAttribute("disabled", "");
-      const saved = await this.vault.save({ ...d, name: d.name.trim(), folder: d.folder.trim() });
+      const saved = await this.vault.save({ ...d, name: d.name.trim(), folder });
       this.dirty = false;
       this.view = { mode: "show", id: saved.id };
       this.renderSidebar(false);
@@ -1082,7 +1238,7 @@ export class VaultApp {
     if (!all.length) return void this.toast("Dışa aktarılacak kayıt yok", "warn");
     const formats = [
       { label: "Şifreli yedek", desc: `${all.length} kaydın hepsi, ana parolanla şifreli. USB'de ya da bulutta güvenle saklanır. Geri yüklemek için: İçe aktar.`, count: all.length, ext: BACKUP_EXT, type: "application/json", make: () => "" },
-      { label: "Bitwarden JSON", desc: `${all.length} kaydın hepsi: notlar, kartlar, klasörler. Bitwarden, Proton Pass, KeePassXC ve bu uygulama geri alır.`, count: all.length, ext: "json", type: "application/json", make: () => toBitwardenJson(all) },
+      { label: "Bitwarden JSON", desc: `${all.length} kaydın hepsi: notlar, kartlar, klasörler. Bitwarden, Proton Pass, KeePassXC ve bu uygulama geri alır.`, count: all.length, ext: "json", type: "application/json", make: () => toBitwardenJson(all, this.vault.folders()) },
       { label: "CSV", desc: `${logins.length} giriş kaydı. Tarayıcılar ve çoğu parola yöneticisi alır; notlar ve kartlar girmez.`, count: logins.length, ext: "csv", type: "text/csv;charset=utf-8", make: () => toCsv(logins) },
     ].filter((f) => f.count);
     const pick = await this.modal<(typeof formats)[number]>((done) => [
@@ -1127,7 +1283,11 @@ export class VaultApp {
     const existing = this.vault.all();
     const fresh = opened.entries.filter((n) => !existing.some((e) => e.id === n.id || sameEntry(e, n)));
     const lost = opened.unreadable ? ` ${opened.unreadable} kayıt çözülemedi.` : "";
-    if (!fresh.length) return void this.toast(`Yedekteki kayıtların hepsi kasada zaten var.${lost}`, lost ? "warn" : "info");
+    if (!fresh.length) {
+      await this.vault.mergeFolders(opened.folders);
+      this.renderSidebar(false);
+      return void this.toast(`Yedekteki kayıtların hepsi kasada zaten var.${lost}`, lost ? "warn" : "info");
+    }
     const skipped = opened.entries.length - fresh.length;
     const ok = await this.ask(
       `${fresh.length} kayıt geri yüklensin mi?`,
@@ -1136,12 +1296,13 @@ export class VaultApp {
     );
     if (!ok) return;
     for (const e of fresh) await this.vault.save(e);
+    await this.vault.mergeFolders(opened.folders);
     this.renderSidebar(false);
     this.renderList(true);
     this.toast(`${fresh.length} kayıt yedekten geri yüklendi`);
   }
 
-  private askBackupPassword(backup: Backup): Promise<{ entries: Entry[]; unreadable: number } | null> {
+  private askBackupPassword(backup: Backup): Promise<{ entries: Entry[]; folders: string[]; unreadable: number } | null> {
     return this.modal((done) => {
       const input = h("input", { class: "pw-input", type: "password", placeholder: "Yedeğin ana parolası", autocomplete: "off", spellcheck: "false", "aria-label": "Yedeğin ana parolası" }) as HTMLInputElement;
       const note = h("p", { class: "pw-muted pw-modal-note" }, "Bu yedek farklı bir ana parolayla alınmış. Yedeği aldığın andaki parolayı gir.");

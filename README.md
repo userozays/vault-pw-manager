@@ -20,6 +20,13 @@ Kayıtlar yalnız bu bilgisayarda durduğu için ara ara yedek al: **Dışa akta
 - **Geri yükleme:** **İçe aktar** ile yedek dosyasını seç. Aynı kasanın yedeğiyse parola sorulmaz; farklı bir ana parolayla alınmışsa o parola istenir. Kasada zaten olan kayıtlar atlanır, mevcut kayıtlara dokunulmaz.
 - Ayarlar ekranı son yedeğin tarihini gösterir.
 
+## Klasörler
+- **Oluştur:** Kenar çubuğunda **Klasörler** başlığının yanındaki **+**. Boş klasör de açılabilir.
+- **Yeniden adlandır / sil:** Klasörün üzerine gelince çıkan kalem düğmesi ya da sağ tık. Silinen klasördeki kayıtlar silinmez, klasörsüz kalır.
+- **Taşı:** Bir kaydı açıp üst çubuktaki klasör düğmesi; oradan yeni klasör de açılabilir. Düzenleme ekranındaki **Klasör** alanı da çalışır.
+- Klasör adlarında büyük/küçük harf fark etmez ("banka" yazınca var olan "Banka"ya gider).
+- Liste `folders.json` dosyasında şifreli durur; şifreli yedeğe ve Bitwarden JSON dışa aktarımına boş klasörler de girer.
+
 ## İçe / dışa aktarma
 - **İçe:** Şifreli yedek (.vpmbackup), Bitwarden (.json), Chrome, Edge, Brave, Safari, Firefox, 1Password, LastPass, KeePass (.csv). Zaten olan kayıtlar atlanır.
 - **Dışa:** Şifreli yedek, Bitwarden JSON (her şey, açık metin) veya CSV (yalnız girişler, açık metin). Dosya, sistemin kaydet penceresiyle seçtiğin yere yazılır.

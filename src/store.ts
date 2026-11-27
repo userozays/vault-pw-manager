@@ -55,6 +55,29 @@ export interface Backup {
   count: number;
   meta: VaultMeta;
   entries: EntryFile[];
+  /** Klasör listesi (boş klasörler dahil); eski yedeklerde yok. */
+  folders?: Sealed;
+}
+
+/** Klasör listesi tek bir şifreli dosyada durur; kayıtların klasör alanı ayrıca kendi dosyasında. */
+interface FoldersFile {
+  v: 1;
+  data: Sealed;
+}
+const FOLDERS_BIND = "folders";
+
+const folderKey = (name: string) => name.trim().toLocaleLowerCase("tr");
+/** İki klasör adı aynı klasör mü (büyük/küçük harf ve baştaki/sondaki boşluk önemsiz). */
+export const sameFolder = (a: string, b: string) => !!a.trim() && folderKey(a) === folderKey(b);
+const sortFolders = (names: Iterable<string>) => [...names].sort((a, b) => a.localeCompare(b, "tr"));
+
+/** Klasör adını temizler; boşsa ya da çok uzunsa hata. "/" ve "\" içe aktarımda alt klasör ayırıcısı olduğu için yasak. */
+export function checkFolderName(name: string): string {
+  const clean = name.trim().replace(/\s+/g, " ");
+  if (!clean) throw new Error("Klasör adı boş olamaz.");
+  if (clean.length > 60) throw new Error("Klasör adı en fazla 60 karakter olabilir.");
+  if (/[\\/]/.test(clean)) throw new Error('Klasör adında "/" ya da "\\" kullanılamaz.');
+  return clean;
 }
 
 /** Metin bir yedek dosyası değilse null; bozuk bir yedekse hata. */
@@ -98,14 +121,18 @@ export class Vault {
   private key: CryptoKey | null = null;
   private entries = new Map<string, Entry>();
   private mtimes = new Map<string, number>();
+  /** Kullanıcının açtığı klasörler; kayıtlardaki klasör adları buna ayrıca eklenir. */
+  private folderList: string[] = [];
 
   private readonly meta: string;
+  private readonly foldersPath: string;
 
   constructor(
     private fs: FileAdapter,
     private readonly dir: string = DIR,
   ) {
     this.meta = `${dir}/meta.json`;
+    this.foldersPath = `${dir}/folders.json`;
   }
 
   private entryPath(id: string): string {
@@ -128,6 +155,7 @@ export class Vault {
     this.key = key;
     this.entries.clear();
     this.mtimes.clear();
+    this.folderList = [];
   }
 
   /** Parola yanlışsa false. */
@@ -138,6 +166,7 @@ export class Vault {
     this.key = key;
     this.entries.clear();
     this.mtimes.clear();
+    this.folderList = [];
     await this.refresh();
     return true;
   }
@@ -146,6 +175,7 @@ export class Vault {
     this.key = null;
     this.entries.clear();
     this.mtimes.clear();
+    this.folderList = [];
   }
 
   all(): Entry[] {
@@ -158,6 +188,7 @@ export class Vault {
 
   async save(entry: Entry): Promise<Entry> {
     const key = this.requireKey();
+    const prev = this.entries.get(entry.id);
     const saved = { ...entry, updated: new Date().toISOString() };
     const file: EntryFile = { v: 1, id: saved.id, data: await seal(key, saved, saved.id) };
     const path = this.entryPath(saved.id);
@@ -165,6 +196,9 @@ export class Vault {
     this.entries.set(saved.id, saved);
     const st = await this.fs.stat(path);
     if (st) this.mtimes.set(path, st.mtime);
+    // Kullanılan klasörler listeye yazılır: son kaydı taşınan klasör, silinene kadar boş olarak kalır.
+    const missing = [prev?.folder ?? "", saved.folder].filter((f) => f.trim() && !this.folderList.some((x) => sameFolder(x, f)));
+    if (missing.length) await this.saveFolders([...this.folderList, ...missing]);
     return saved;
   }
 
@@ -174,6 +208,66 @@ export class Vault {
     if (await this.fs.exists(path)) await this.fs.remove(path);
     this.entries.delete(id);
     this.mtimes.delete(path);
+  }
+
+  // ---- klasörler ----
+
+  /** Tüm klasörler: açılmış (boş olanlar dahil) ve kayıtlarda geçenler, alfabetik. */
+  folders(): string[] {
+    const byKey = new Map<string, string>();
+    for (const f of this.folderList) byKey.set(folderKey(f), f);
+    for (const e of this.entries.values()) if (e.folder && !byKey.has(folderKey(e.folder))) byKey.set(folderKey(e.folder), e.folder);
+    return sortFolders(byKey.values());
+  }
+
+  /** Aynı adda (büyük/küçük harf farkı gözetmeden) klasör varsa onun yazılışı. */
+  findFolder(name: string): string | undefined {
+    const k = folderKey(name);
+    return this.folders().find((f) => folderKey(f) === k);
+  }
+
+  async addFolder(name: string): Promise<string> {
+    const clean = checkFolderName(name);
+    if (this.findFolder(clean)) throw new Error(`"${clean}" adında bir klasör zaten var.`);
+    await this.saveFolders([...this.folderList, clean]);
+    return clean;
+  }
+
+  /** Klasörü ve içindeki kayıtları yeni ada taşır. Aynı adda başka klasör varsa hata. */
+  async renameFolder(from: string, to: string): Promise<number> {
+    const clean = checkFolderName(to);
+    const existing = this.findFolder(clean);
+    if (existing && folderKey(existing) !== folderKey(from)) throw new Error(`"${existing}" adında bir klasör zaten var.`);
+    const moved = this.all().filter((e) => sameFolder(e.folder, from));
+    for (const e of moved) await this.save({ ...e, folder: clean });
+    await this.saveFolders([...this.folderList.filter((f) => !sameFolder(f, from)), clean]);
+    return moved.length;
+  }
+
+  /** Klasörü siler; içindeki kayıtlar silinmez, klasörsüz kalır. Taşınan kayıt sayısını döner. */
+  async deleteFolder(name: string): Promise<number> {
+    const moved = this.all().filter((e) => sameFolder(e.folder, name));
+    for (const e of moved) await this.save({ ...e, folder: "" });
+    await this.saveFolders(this.folderList.filter((f) => !sameFolder(f, name)));
+    return moved.length;
+  }
+
+  /** Listeye eksik klasörleri ekler (ör. yedekten geri yüklerken). */
+  async mergeFolders(names: string[]): Promise<void> {
+    const missing = names.map((n) => n.trim()).filter((n) => n && !this.findFolder(n));
+    if (missing.length) await this.saveFolders([...this.folderList, ...missing]);
+  }
+
+  private async saveFolders(list: string[]): Promise<void> {
+    const key = this.requireKey();
+    const seen = new Set<string>();
+    const clean = list.filter((f) => f && !seen.has(folderKey(f)) && seen.add(folderKey(f)));
+    const file: FoldersFile = { v: 1, data: await seal(key, sortFolders(clean), FOLDERS_BIND) };
+    if (!(await this.fs.exists(this.dir))) await this.fs.mkdir(this.dir);
+    await this.fs.write(this.foldersPath, JSON.stringify(file));
+    this.folderList = sortFolders(clean);
+    const st = await this.fs.stat(this.foldersPath);
+    if (st) this.mtimes.set(this.foldersPath, st.mtime);
   }
 
   /**
@@ -186,13 +280,27 @@ export class Vault {
     const listing = await this.listWithTimes();
     const present = new Set<string>();
     const stale: { path: string; id: string; mtime: number }[] = [];
+    let foldersSeen = false;
+    let changed = false;
     for (const { path, mtime } of listing) {
+      if (path.replace(/\\/g, "/").endsWith("/folders.json")) {
+        foldersSeen = true;
+        if (this.mtimes.get(this.foldersPath) !== mtime && (await this.loadFolders(path))) {
+          this.mtimes.set(this.foldersPath, mtime);
+          changed = true;
+        }
+        continue;
+      }
       const m = ID_RE.exec(path.replace(/\\/g, "/"));
       if (!m) continue;
       present.add(path);
       if (this.mtimes.get(path) !== mtime) stale.push({ path, id: m[1], mtime });
     }
-    let changed = false;
+    if (!foldersSeen && this.mtimes.has(this.foldersPath)) {
+      this.mtimes.delete(this.foldersPath);
+      this.folderList = [];
+      changed = true;
+    }
     let unreadable = 0;
     const texts = await this.readAll(stale.map((s) => s.path));
     await Promise.all(
@@ -212,6 +320,7 @@ export class Vault {
       }),
     );
     for (const [path] of this.mtimes) {
+      if (path === this.foldersPath) continue;
       if (!present.has(path)) {
         const m = ID_RE.exec(path.replace(/\\/g, "/"));
         if (m) this.entries.delete(m[1]);
@@ -229,7 +338,8 @@ export class Vault {
     const entries = await Promise.all(
       this.all().map(async (e): Promise<EntryFile> => ({ v: 1, id: e.id, data: await seal(key, e, e.id) })),
     );
-    const backup: Backup = { format: BACKUP_FORMAT, v: 1, created: new Date().toISOString(), count: entries.length, meta, entries };
+    const folders = await seal(key, this.folders(), FOLDERS_BIND);
+    const backup: Backup = { format: BACKUP_FORMAT, v: 1, created: new Date().toISOString(), count: entries.length, meta, entries, folders };
     return JSON.stringify(backup);
   }
 
@@ -237,7 +347,7 @@ export class Vault {
    * Yedeği çözer. Parola verilmezse açık kasanın anahtarı denenir (aynı kasanın yedeği).
    * Parola yanlışsa null. Çözülemeyen kayıtlar atlanır ve sayılır.
    */
-  async openBackup(b: Backup, password?: string): Promise<{ entries: Entry[]; unreadable: number } | null> {
+  async openBackup(b: Backup, password?: string): Promise<{ entries: Entry[]; folders: string[]; unreadable: number } | null> {
     let key: CryptoKey | null;
     if (password === undefined) {
       key = this.requireKey();
@@ -261,7 +371,29 @@ export class Vault {
         }
       }),
     );
-    return { entries, unreadable };
+    let folders: string[] = [];
+    if (b.folders) {
+      try {
+        const list = await open<unknown>(key, b.folders, FOLDERS_BIND);
+        if (Array.isArray(list)) folders = list.filter((f): f is string => typeof f === "string");
+      } catch {
+        /* klasör listesi çözülemezse kayıtlardaki klasör adları yine gelir */
+      }
+    }
+    return { entries, folders, unreadable };
+  }
+
+  /** folders.json'u okur; çözülemezse eski listeyi korur ve false döner. */
+  private async loadFolders(path: string): Promise<boolean> {
+    try {
+      const file = JSON.parse(await this.fs.read(path)) as FoldersFile;
+      const list = await open<unknown>(this.requireKey(), file.data, FOLDERS_BIND);
+      if (!Array.isArray(list)) return false;
+      this.folderList = sortFolders(list.filter((f): f is string => typeof f === "string" && !!f.trim()));
+      return true;
+    } catch {
+      return false;
+    }
   }
 
   private async listWithTimes(): Promise<{ path: string; mtime: number }[]> {

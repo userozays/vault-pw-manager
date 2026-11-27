@@ -126,9 +126,9 @@ export function toCsv(entries: Entry[]): string {
   return [["name", "url", "username", "password"], ...rows].map((r) => r.map(csvField).join(",")).join("\r\n") + "\r\n";
 }
 
-/** Bitwarden'ın şifresiz .json biçimi: tüm kayıtlar, klasörler, notlar ve kartlarla (parseBitwarden'ın tersi). */
-export function toBitwardenJson(entries: Entry[]): string {
-  const names = [...new Set(entries.map((e) => e.folder).filter(Boolean))].sort((a, b) => a.localeCompare(b, "tr"));
+/** Bitwarden'ın şifresiz .json biçimi: tüm kayıtlar, klasörler (boş olanlar dahil), notlar ve kartlarla (parseBitwarden'ın tersi). */
+export function toBitwardenJson(entries: Entry[], folderNames: string[] = []): string {
+  const names = [...new Set([...folderNames, ...entries.map((e) => e.folder)].filter(Boolean))].sort((a, b) => a.localeCompare(b, "tr"));
   const folders = names.map((name) => ({ id: crypto.randomUUID(), name }));
   const folderId = new Map(folders.map((f) => [f.name, f.id]));
   const items = entries.map((e) => {
